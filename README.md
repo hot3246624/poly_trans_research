@@ -54,6 +54,16 @@ python3 interactive_chart.py trades.json
 | **`analysis_table.html`** | **核心分析报表**。包含每笔交易的成本核算与策略逻辑还原。 |
 | `trades.json` | (仅API模式) 原始交易数据备份。 |
 
+### 📜 经典图表工具 (chartgenerator.py)
+
+如果您习惯使用旧版工具，我们也已将其恢复并修复：
+
+```bash
+# 用法: python3 chartgenerator.py <JSON文件路径>
+python3 chartgenerator.py trades.json
+```
+生成 `chart.png` 静态图片。
+
 ### 📊 报表核心指标解读
 
 在 `analysis_table.html` 中，您可以关注以下关键列来还原策略逻辑：
