@@ -248,11 +248,21 @@ def infer_resolved_side_from_trades(trades, threshold=PRICE_RESOLUTION_THRESHOLD
 # MAIN
 # ----------------------------------------
 def main():
-    # Resolved side can come from argv (YES/NO/AUTO) or be inferred later
-    resolved_arg = normalize_resolved_arg(sys.argv[1] if len(sys.argv) > 1 else None)
+    # Check arguments
+    arg1 = sys.argv[1] if len(sys.argv) > 1 else None
+    arg2 = sys.argv[2] if len(sys.argv) > 2 else None
 
-    # Optional override: load from a provided JSON file instead of fetching
-    json_file = sys.argv[2] if len(sys.argv) > 2 else None
+    resolved_arg = None
+    json_file = None
+
+    # Support "python chartgenerator.py trades.json [YES/NO]"
+    if arg1 and arg1.lower().endswith(".json"):
+        json_file = arg1
+        resolved_arg = normalize_resolved_arg(arg2)
+    else:
+        # Support "python chartgenerator.py YES trades.json"
+        resolved_arg = normalize_resolved_arg(arg1)
+        json_file = arg2
 
     if json_file:
         try:
@@ -492,7 +502,7 @@ def main():
 
     for x_idx in sorted(grouped_trades.keys()):
         group = grouped_trades[x_idx]
-        # avg_price = sum(t["price"] for t in group) / len(group)
+        avg_price = sum(t["price"] for t in group) / len(group)
 
         if len(group) == 1:
             # SINGLE TRADE
