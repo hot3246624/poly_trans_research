@@ -1,6 +1,7 @@
 import sys
 import json
 import datetime
+import re
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
@@ -149,8 +150,16 @@ def write_stats_report(
 # ----------------------------------------
 # DATA FETCHING
 # ----------------------------------------
+def _normalize_market_text(text):
+    """Normalize market titles for resilient matching."""
+    if not text:
+        return ""
+    lowered = text.lower().replace("–", "-").replace("—", "-")
+    return re.sub(r"[^a-z0-9]+", "", lowered)
+
+
 def search_market(query):
-    """Return (event, market) for the first matching search result."""
+    """Return (event, market) for the best matching search result."""
     try:
         resp = requests.get(SEARCH_URL, params={"q": query}, timeout=10)
         resp.raise_for_status()
@@ -160,10 +169,51 @@ def search_market(query):
         return None, None
 
     events = data.get("events", []) if isinstance(data, dict) else []
+    if not events:
+        return None, None
+
+    query_raw = (query or "").strip().lower()
+    query_norm = _normalize_market_text(query)
+    fallback = None
+    best = None
+    best_score = -1
+
     for event in events:
         markets = event.get("markets") or []
-        if markets:
-            return event, markets[0]
+        for market in markets:
+            title = (market.get("question") or event.get("title") or "").strip()
+            if not title:
+                continue
+            if fallback is None:
+                fallback = (event, market)
+
+            title_raw = title.lower()
+            title_norm = _normalize_market_text(title)
+
+            if query_raw and title_raw == query_raw:
+                return event, market
+            if query_norm and title_norm == query_norm:
+                return event, market
+
+            score = 0
+            if query_raw and query_raw in title_raw:
+                score = 200
+            elif query_norm and query_norm in title_norm:
+                score = 180
+            else:
+                tokens = [t for t in re.split(r"[^a-z0-9]+", query_raw) if t]
+                if tokens:
+                    overlap = sum(1 for t in set(tokens) if t in title_raw)
+                    score = overlap * 10
+
+            if score > best_score:
+                best_score = score
+                best = (event, market)
+
+    if best and best_score > 0:
+        return best
+    if fallback:
+        return fallback
     return None, None
 
 

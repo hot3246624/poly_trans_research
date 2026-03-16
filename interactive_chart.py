@@ -3,6 +3,8 @@
 import sys
 import json
 import datetime
+import re
+import html
 import requests
 import numpy as np
 import plotly.graph_objects as go
@@ -27,8 +29,16 @@ STYLES = {
 # ----------------------------------------
 # DATA FETCHING (From chartgenerator.py)
 # ----------------------------------------
+def _normalize_market_text(text):
+    """Normalize market titles for resilient matching."""
+    if not text:
+        return ""
+    lowered = text.lower().replace("–", "-").replace("—", "-")
+    return re.sub(r"[^a-z0-9]+", "", lowered)
+
+
 def search_market(query):
-    """Return (event, market) for the first matching search result."""
+    """Return (event, market) for the best matching search result."""
     try:
         resp = requests.get(SEARCH_URL, params={"q": query}, timeout=10)
         resp.raise_for_status()
@@ -38,10 +48,51 @@ def search_market(query):
         return None, None
 
     events = data.get("events", []) if isinstance(data, dict) else []
+    if not events:
+        return None, None
+
+    query_raw = (query or "").strip().lower()
+    query_norm = _normalize_market_text(query)
+    fallback = None
+    best = None
+    best_score = -1
+
     for event in events:
         markets = event.get("markets") or []
-        if markets:
-            return event, markets[0]
+        for market in markets:
+            title = (market.get("question") or event.get("title") or "").strip()
+            if not title:
+                continue
+            if fallback is None:
+                fallback = (event, market)
+
+            title_raw = title.lower()
+            title_norm = _normalize_market_text(title)
+
+            if query_raw and title_raw == query_raw:
+                return event, market
+            if query_norm and title_norm == query_norm:
+                return event, market
+
+            score = 0
+            if query_raw and query_raw in title_raw:
+                score = 200
+            elif query_norm and query_norm in title_norm:
+                score = 180
+            else:
+                tokens = [t for t in re.split(r"[^a-z0-9]+", query_raw) if t]
+                if tokens:
+                    overlap = sum(1 for t in set(tokens) if t in title_raw)
+                    score = overlap * 10
+
+            if score > best_score:
+                best_score = score
+                best = (event, market)
+
+    if best and best_score > 0:
+        return best
+    if fallback:
+        return fallback
     return None, None
 
 
@@ -202,12 +253,17 @@ def main():
         return
         
     arg1 = sys.argv[1]
+    condition_id = None
+    address = None
     
     # Check if arg1 is a file
     if arg1.endswith(".json"):
         print(f"Loading trades from local file: {arg1}")
         with open(arg1, "r") as f:
             raw_trades = json.load(f)
+        # Optional user address for local-file mode.
+        if len(sys.argv) >= 3:
+            address = sys.argv[2]
         
         # Try to guess market title from first trade or filename
         if raw_trades:
@@ -232,6 +288,7 @@ def main():
             
         condition_id = market.get("conditionId")
         market_title = market.get("question") or event.get("title")
+        print(f"Matched market: {market_title}")
         print(f"Target Condition ID: {condition_id}")
         
         # 2. Fetch Data
@@ -445,8 +502,19 @@ def main():
     # ---------------------------
     print("Generating Analysis Table...")
     table_rows = calculate_table_metrics(parsed)
+    summary = calculate_summary(table_rows)
+    analysis_meta = {
+        "market_title": market_title,
+        "condition_id": condition_id if condition_id else "N/A",
+        "user_address": address if address else "N/A",
+        "trade_time_range": (
+            f"{start_et.strftime('%Y-%m-%d %I:%M:%S %p')} - "
+            f"{end_et.strftime('%Y-%m-%d %I:%M:%S %p')} ET"
+        ),
+        "trade_count": len(parsed),
+    }
     analysis_file = "analysis_table.html"
-    generate_html_table(table_rows, analysis_file)
+    generate_html_table(table_rows, analysis_file, summary=summary, metadata=analysis_meta)
     print(f"Analysis table saved to {analysis_file}")
 
 def calculate_table_metrics(parsed_trades):
@@ -478,13 +546,6 @@ def calculate_table_metrics(parsed_trades):
         no_trade_cell = trade_str if not is_yes else ""
         
         # Update Cumulatives
-        # Assumption: trades are strictly increasing position? 
-        # User request implies "Buy YES" and "Buy NO". Sell logic is complex (reducing cost basis vs realizing profit).
-        # For this specific table request, user focused on "Buy YES" and "Buy NO". 
-        # If t["type"] == "Sell", we should probably subtract Qty and Cost?
-        # User formula: "YES買入累计总量". imply ignores Sells or nets them.
-        # Let's assume Netting for now to keep avg price sane.
-        
         if t["type"] == "Buy":
             if is_yes:
                 cum_yes_qty += qty
@@ -493,24 +554,12 @@ def calculate_table_metrics(parsed_trades):
                 cum_no_qty += qty
                 cum_no_cost += cost
         else:
-            # Sell - Reduce Qty and Cost proportional to avg? Or specific fifo?
-            # Simple approach: Reduce Qty, Reduce Cost by *Current Avg* (FIFO-ish assumption) or *Execution Price* (Realized Gain)?
-            # User request: "YES买入累计总量" (Accumulated Buy Volume).
-            # If I sell, does "Accumulated Buy Volume" decrease? Probably not.
-            # But "Avg Buy Price" shouldn't change on Sell if we track Buys Only.
-            # HOWEVER, Profit calculation `min(yes, no) - cost` implies we care about current holding cost.
-            # Let's stick to "Net Position" logic for Qty/Cost to be useful for Profit.
             if is_yes:
-                cum_yes_qty -= qty
-                cum_yes_cost -= cost # Start with subtract execution cost (PnL realized outside) -> Wait, this messes up "Avg Buy Price".
-                # If checking "Accumulation", maybe we only count BUYS?
-                # User said: "YES买入累计总量" -> Cumulative BUY Volume.
-                # All trades in file are BUY anyway based on previous analysis.
-                # So we simply Add.
-                pass
-            pass
-            
-        # Re-check trades.json: Only BUYs seen so far. Secure assumption for now.
+                cum_yes_qty = max(0.0, cum_yes_qty - qty)
+                cum_yes_cost = max(0.0, cum_yes_cost - cost)
+            else:
+                cum_no_qty = max(0.0, cum_no_qty - qty)
+                cum_no_cost = max(0.0, cum_no_cost - cost)
         
         # Avg Prices (Dollars)
         avg_yes = (cum_yes_cost / cum_yes_qty) if cum_yes_qty > 0.001 else 0
@@ -556,7 +605,45 @@ def calculate_table_metrics(parsed_trades):
         
     return rows
 
-def generate_html_table(rows, filename):
+
+def calculate_summary(rows):
+    if not rows:
+        return {
+            "total_spent": 0.0,
+            "locked_profit": 0.0,
+            "if_yes_wins_pnl": 0.0,
+            "if_no_wins_pnl": 0.0,
+            "final_verdict": "NEUTRAL",
+        }
+
+    last = rows[-1]
+    cum_yes = last.get("cum_yes", 0.0)
+    cum_no = last.get("cum_no", 0.0)
+    avg_yes = last.get("avg_yes", 0.0)
+    avg_no = last.get("avg_no", 0.0)
+
+    total_spent = cum_yes * avg_yes + cum_no * avg_no
+    locked_profit = min(cum_yes, cum_no) - total_spent
+    if_yes_wins_pnl = cum_yes - total_spent
+    if_no_wins_pnl = cum_no - total_spent
+
+    if locked_profit > 1e-6:
+        final_verdict = "POSITIVE"
+    elif locked_profit < -1e-6:
+        final_verdict = "NEGATIVE"
+    else:
+        final_verdict = "NEUTRAL"
+
+    return {
+        "total_spent": total_spent,
+        "locked_profit": locked_profit,
+        "if_yes_wins_pnl": if_yes_wins_pnl,
+        "if_no_wins_pnl": if_no_wins_pnl,
+        "final_verdict": final_verdict,
+    }
+
+
+def generate_html_table(rows, filename, summary=None, metadata=None):
     html_template = """
     <!DOCTYPE html>
     <html>
@@ -573,10 +660,21 @@ def generate_html_table(rows, filename):
             .yes-col { color: #4caf50; }
             .no-col { color: #e91e63; }
             .cost-col { color: #ffeb3b; }
+            .meta-line { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+            .meta-item { font-size: 12px; color: #bbb; border: 1px solid #333; background: #1b1b1b; padding: 4px 8px; border-radius: 6px; }
+            .meta-label { color: #8a8a8a; }
+            .summary-box { margin-top: 20px; padding: 14px; border: 1px solid #444; border-radius: 8px; max-width: 560px; }
+            .summary-box p { margin: 6px 0; }
         </style>
     </head>
     <body>
-        <h2>Trade Analysis Table</h2>
+        <h2>Trade Analysis Table - __MARKET_TITLE__</h2>
+        <div class="meta-line">
+            <span class="meta-item"><span class="meta-label">Condition ID:</span> __CONDITION_ID__</span>
+            <span class="meta-item"><span class="meta-label">User:</span> __USER_ADDRESS__</span>
+            <span class="meta-item"><span class="meta-label">Trade Time Range:</span> __TRADE_TIME_RANGE__</span>
+            <span class="meta-item"><span class="meta-label">Trade Count:</span> __TRADE_COUNT__</span>
+        </div>
         <table>
             <thead>
                 <tr>
@@ -597,22 +695,68 @@ def generate_html_table(rows, filename):
                 {rows}
             </tbody>
         </table>
+        __SUMMARY_BLOCK__
     </body>
     </html>
     """
-    
+
+    meta = metadata or {}
+    market_title = html.escape(str(meta.get("market_title") or "N/A"))
+    condition_text = html.escape(str(meta.get("condition_id") or "N/A"))
+    user_text = html.escape(str(meta.get("user_address") or "N/A"))
+    range_text = html.escape(str(meta.get("trade_time_range") or "N/A"))
+    count_text = html.escape(str(meta.get("trade_count") if meta.get("trade_count") is not None else "N/A"))
+
+    html_template = html_template.replace("__MARKET_TITLE__", market_title)
+    html_template = html_template.replace("__CONDITION_ID__", condition_text)
+    html_template = html_template.replace("__USER_ADDRESS__", user_text)
+    html_template = html_template.replace("__TRADE_TIME_RANGE__", range_text)
+    html_template = html_template.replace("__TRADE_COUNT__", count_text)
+
+    if summary is not None:
+        locked_cls = "pos" if summary["locked_profit"] > 0 else "neg" if summary["locked_profit"] < 0 else "neu"
+        yes_cls = "pos" if summary["if_yes_wins_pnl"] > 0 else "neg" if summary["if_yes_wins_pnl"] < 0 else "neu"
+        no_cls = "pos" if summary["if_no_wins_pnl"] > 0 else "neg" if summary["if_no_wins_pnl"] < 0 else "neu"
+        verdict_map = {
+            "POSITIVE": ("pos", "配对部分为正收益 / Positive locked PnL"),
+            "NEGATIVE": ("neg", "配对部分为负收益 / Negative locked PnL"),
+            "NEUTRAL": ("neu", "配对部分接近持平 / Near break-even"),
+        }
+        verdict_cls, verdict_text = verdict_map.get(summary.get("final_verdict"), ("neu", "Unknown"))
+        cum_yes = summary.get("cum_yes", 0)
+        cum_no = summary.get("cum_no", 0)
+        summary_block = f"""
+        <div class="summary-box">
+            <h3>总收益 / Total Return</h3>
+            <p>总投入 Total Spent: <strong>${summary['total_spent']:.2f}</strong></p>
+            <p>总锁定利润 Locked Profit: <strong class="{locked_cls}">${summary['locked_profit']:.2f}</strong></p>
+            <p>若 YES 胜出 总收益 If YES wins: <strong class="{yes_cls}">${summary['if_yes_wins_pnl']:.2f}</strong> <span style="color:#888">(CUM YES×$1 − 总投入)</span></p>
+            <p>若 NO 胜出 总收益 If NO wins: <strong class="{no_cls}">${summary['if_no_wins_pnl']:.2f}</strong> <span style="color:#888">(CUM NO×$1 − 总投入)</span></p>
+            <p>最终判断 Final Verdict: <strong class="{verdict_cls}">{verdict_text}</strong></p>
+            <p style="margin-top: 10px; font-size: 11px; color: #888;">
+                注: 与 Polymarket 官网可能有差异（手续费、滑点、结算口径不同）。
+            </p>
+        </div>
+        """
+    else:
+        summary_block = ""
+
+    html_template = html_template.replace("__SUMMARY_BLOCK__", summary_block)
+
     tbody = ""
     for r in rows:
         # Styling classes
         diff_cls = "pos" if r["net_diff"] > 0 else "neg" if r["net_diff"] < 0 else "neu"
         prof_cls = "pos" if r["profit"] > 0 else "neg" if r["profit"] < 0 else "neu"
-        
+
         # Color pair cost red if > 1.0, green if < 1.0
         pc = r["pair_cost"]
         pc_cls = "cost-col"
-        if pc > 1.001: pc_cls = "neg"
-        elif pc < 0.999: pc_cls = "pos"
-        
+        if pc > 1.001:
+            pc_cls = "neg"
+        elif pc < 0.999:
+            pc_cls = "pos"
+
         tbody += f"""
         <tr>
             <td>{r['time']}</td>
@@ -628,7 +772,7 @@ def generate_html_table(rows, filename):
             <td class="{prof_cls}">${r['profit']:.2f}</td>
         </tr>
         """
-        
+
     with open(filename, "w") as f:
         f.write(html_template.replace("{rows}", tbody))
 
