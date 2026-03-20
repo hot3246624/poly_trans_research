@@ -6,6 +6,8 @@ import datetime
 import re
 import html
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -98,43 +100,137 @@ def search_market(query):
 
 def fetch_trades(condition_id, user_address, page_limit=1000):
     """Fetch all trades using conditionId (Provenance: chartgenerator.py)"""
-    all_trades = []
-    offset = 0
     print(f"Fetching trades for market={condition_id}, user={user_address}...")
-    
-    while True:
-        params = {
-            "limit": page_limit,
-            "offset": offset,
-            "takerOnly": "false",
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": "poly_trans_research/1.0 (+https://github.com/)",
+            "Accept": "application/json, text/plain, */*",
+        }
+    )
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        backoff_factor=0.8,
+        status_forcelist=(408, 429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    def _addr_matches_trade(trade, address):
+        addr = (address or "").lower()
+        if not addr:
+            return False
+        for k in ("proxyWallet", "user", "wallet", "maker", "taker", "address"):
+            v = trade.get(k)
+            if isinstance(v, str) and v.lower() == addr:
+                return True
+        return False
+
+    def _fetch_pages(base_params, label):
+        all_trades = []
+        offset = 0
+        while True:
+            params = dict(base_params)
+            params["limit"] = page_limit
+            params["offset"] = offset
+            try:
+                # Separate connect/read timeouts: connect fast, allow slow server responses.
+                resp = session.get(TRADES_URL, params=params, timeout=(10, 120))
+            except Exception as exc:
+                print(f"Error fetching trades [{label}] (offset={offset}, limit={page_limit}): {exc!r}")
+                return None, None
+
+            if resp.status_code >= 400:
+                body_preview = (resp.text or "").strip()
+                if len(body_preview) > 500:
+                    body_preview = body_preview[:500] + "...(truncated)"
+                # Data API may hard-limit historical pagination for some filters (e.g. user activity).
+                # If we've already collected some pages, keep what we have instead of failing hard.
+                if (
+                    resp.status_code == 400
+                    and "max historical activity offset" in body_preview.lower()
+                    and all_trades
+                ):
+                    print(
+                        f"Reached server-side historical pagination limit [{label}] at offset={offset}. "
+                        f"Continuing with {len(all_trades)} trades already fetched."
+                    )
+                    return all_trades, 206
+                print(
+                    f"Error fetching trades [{label}] (offset={offset}, limit={page_limit}): "
+                    f"HTTP {resp.status_code} {resp.reason}. Body: {body_preview}"
+                )
+                return None, resp.status_code
+
+            try:
+                data = resp.json()
+            except Exception as exc:
+                print(f"Error parsing trades JSON [{label}] (offset={offset}): {exc!r}")
+                return None, None
+
+            if isinstance(data, dict):
+                batch = data.get("trades", [])
+            elif isinstance(data, list):
+                batch = data
+            else:
+                batch = []
+
+            if not batch:
+                break
+
+            all_trades.extend(batch)
+            if len(batch) < page_limit:
+                break
+            offset += page_limit
+            print(f"  [{label}] Fetched {len(all_trades)} trades so far...")
+
+        return all_trades, 200
+
+    # Attempt 1: server-side filter by both market and user (fastest when it works)
+    trades, status = _fetch_pages(
+        {
+            "takerOnly": False,
             "market": condition_id,
             "user": user_address,
-        }
-        try:
-            resp = requests.get(TRADES_URL, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            print(f"Error fetching trades: {exc}")
-            break
+        },
+        label="market+user",
+    )
+    if trades is not None:
+        return trades
 
-        if isinstance(data, dict):
-            batch = data.get("trades", [])
-        elif isinstance(data, list):
-            batch = data
-        else:
-            batch = []
+    # Attempt 2 (fallback): if market+user path times out, fetch by market only (often smaller),
+    # then filter locally by address.
+    if status == 408:
+        print("Server timed out on market+user query. Falling back to market-only fetch and local address filtering...")
+        market_trades, _ = _fetch_pages({"takerOnly": False, "market": condition_id}, label="market-only")
+        if market_trades:
+            filtered_market = [t for t in market_trades if _addr_matches_trade(t, user_address)]
+            print(f"  [market-only] Filtered {len(filtered_market)} trades for target user.")
+            if filtered_market:
+                return filtered_market
 
-        if not batch:
-            break
-            
-        all_trades.extend(batch)
-        if len(batch) < page_limit:
-            break
-        offset += page_limit
-        print(f"  Fetched {len(all_trades)} trades so far...")
+        # Attempt 3 (fallback): fetch by user only (may be capped by server pagination),
+        # then filter locally by conditionId.
+        print("Market-only path did not yield results. Falling back to user-only fetch and local market filtering...")
+        user_trades, _ = _fetch_pages({"takerOnly": False, "user": user_address}, label="user-only")
+        if not user_trades:
+            return []
+        filtered_user = [
+            t
+            for t in user_trades
+            if str(t.get("conditionId") or t.get("condition_id") or "").lower() == str(condition_id).lower()
+        ]
+        print(f"  [user-only] Filtered {len(filtered_user)} trades for target market.")
+        return filtered_user
 
-    return all_trades
+    return []
 
 # ----------------------------------------
 # PROCESSING
