@@ -1,6 +1,33 @@
 __pycache__/
+*.py[cod]
 *.DS_Store
-trades.json
-chart.png
+*.egg-info/
+
+# Virtual envs
+.venv/
+
+# Replay pipeline outputs
+data/raw/**
+data/replay/**
+!data/raw/.gitkeep
+!data/replay/.gitkeep
+
+# Snapshot and legacy datasets
+data/snapshots/**
+legacy/datasets/**
+
+# Legacy report outputs
+legacy/reports/**
+!legacy/reports/.gitkeep
+
+# Old root outputs (kept for backward compatibility wrappers)
+analysis_table*.html
 chart.html
+chart.png
+trades.json
 report_path
+# Local runtime config (may contain sensitive endpoints/accounts)
+config/*.json
+config/*.env
+!config/*.example.json
+!config/*.env.example

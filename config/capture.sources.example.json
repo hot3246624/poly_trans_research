@@ -1,0 +1,32 @@
+{
+  "raw_root": "data/raw",
+  "market_prefixes": [
+    "btc-updown-5m"
+  ],
+  "market_channels": [
+    "book",
+    "last_trade_price"
+  ],
+  "max_markets_per_prefix": 1,
+  "debug_raw_market_ws": false,
+  "market_ws": {
+    "enabled": true,
+    "url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    "default_channel": "book",
+    "reconnect_sec": 3,
+    "subscribe": []
+  },
+  "user_ws": {
+    "enabled": false,
+    "url": "wss://ws-subscriptions-clob.polymarket.com/ws/user",
+    "default_channel": "order",
+    "reconnect_sec": 3,
+    "subscribe": []
+  },
+  "meta_poll": {
+    "enabled": true,
+    "interval_sec": 20,
+    "active_only": true,
+    "conditional_get": true
+  }
+}

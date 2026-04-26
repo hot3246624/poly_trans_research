@@ -1,0 +1,305 @@
+"""Build replay SQLite from raw envelope files."""
+
+from __future__ import annotations
+
+import dataclasses
+import sqlite3
+from pathlib import Path
+from typing import Dict, Iterable, List
+
+from ..capture.envelope import RawEnvelope
+from ..constants import (
+    CHANNEL_BOOK,
+    CHANNEL_BBA,
+    CHANNEL_LAST_TRADE,
+    CHANNEL_MARKET_META,
+    CHANNEL_MARKET_RESOLVED,
+    CHANNEL_ORDER,
+    CHANNEL_TRADES_BACKFILL,
+    CHANNEL_INVENTORY,
+)
+from ..utils.io import glob_jsonl_gz, iter_jsonl_gz
+from .normalize import (
+    dedup_book_key,
+    dedup_order_key,
+    dedup_trade_key,
+    normalize_book_row,
+    normalize_inventory_event,
+    normalize_market_meta_payload,
+    normalize_md_trade,
+    normalize_order_event,
+    normalize_settlement,
+)
+from .schema import init_schema
+
+
+@dataclasses.dataclass(slots=True)
+class BuildStats:
+    raw_files: int = 0
+    raw_records: int = 0
+    market_meta_rows: int = 0
+    md_book_rows: int = 0
+    md_trades_rows: int = 0
+    own_order_rows: int = 0
+    own_inventory_rows: int = 0
+    settlement_rows: int = 0
+    dedup_skips: int = 0
+
+    def as_dict(self) -> Dict[str, int]:
+        return dataclasses.asdict(self)
+
+
+class ReplayBuilder:
+    def __init__(self, *, raw_day_root: Path, replay_db_path: Path):
+        self.raw_day_root = raw_day_root
+        self.replay_db_path = replay_db_path
+
+    def _load_envelopes(self) -> List[RawEnvelope]:
+        files = list(glob_jsonl_gz([self.raw_day_root]))
+        self._files_count = len(files)
+        envelopes: List[RawEnvelope] = []
+        for path in files:
+            for rec in iter_jsonl_gz(path):
+                envelopes.append(RawEnvelope.from_dict(rec))
+        envelopes.sort(key=lambda e: (e.capture_seq, e.recv_monotonic_ns, e.recv_unix_ms))
+        return envelopes
+
+    def build(self) -> BuildStats:
+        stats = BuildStats()
+        envelopes = self._load_envelopes()
+        stats.raw_files = self._files_count
+        stats.raw_records = len(envelopes)
+
+        self.replay_db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.replay_db_path)
+        conn.row_factory = sqlite3.Row
+        init_schema(conn)
+
+        book_last: Dict[str, tuple] = {}
+        trade_seen: set = set()
+        order_seen: set = set()
+        settlement_seen: set = set()
+
+        cur = conn.cursor()
+
+        for env in envelopes:
+            source = env.source or ""
+            channel = env.channel or ""
+
+            # market meta
+            if channel == CHANNEL_MARKET_META or source == "meta":
+                rec = normalize_market_meta_payload(env.payload_json)
+                if rec:
+                    cur.execute(
+                        """
+                        INSERT INTO market_meta (
+                            condition_id, slug, symbol, interval_sec, start_ms, end_ms,
+                            yes_token_id, no_token_id, tick_size, first_seen_ms, last_seen_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(condition_id) DO UPDATE SET
+                            slug=excluded.slug,
+                            symbol=excluded.symbol,
+                            interval_sec=excluded.interval_sec,
+                            start_ms=excluded.start_ms,
+                            end_ms=excluded.end_ms,
+                            yes_token_id=excluded.yes_token_id,
+                            no_token_id=excluded.no_token_id,
+                            tick_size=excluded.tick_size,
+                            last_seen_ms=excluded.last_seen_ms
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["slug"],
+                            rec["symbol"],
+                            rec["interval_sec"],
+                            rec["start_ms"],
+                            rec["end_ms"],
+                            rec["yes_token_id"],
+                            rec["no_token_id"],
+                            rec["tick_size"],
+                            env.recv_unix_ms,
+                            env.recv_unix_ms,
+                        ),
+                    )
+                    stats.market_meta_rows += 1
+                continue
+
+            # settlement
+            if channel == CHANNEL_MARKET_RESOLVED or source == "settlement":
+                rec = normalize_settlement(env)
+                if rec and rec["condition_id"] not in settlement_seen:
+                    cur.execute(
+                        """
+                        INSERT OR REPLACE INTO settlement_records
+                        (condition_id, official_outcome, settle_ms, resolution_source, capture_seq)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["official_outcome"],
+                            rec["settle_ms"],
+                            rec["resolution_source"],
+                            rec["capture_seq"],
+                        ),
+                    )
+                    settlement_seen.add(rec["condition_id"])
+                    stats.settlement_rows += 1
+                continue
+
+            # inventory
+            if channel == CHANNEL_INVENTORY or source.startswith("inventory"):
+                rec = normalize_inventory_event(env)
+                if rec:
+                    cur.execute(
+                        """
+                        INSERT INTO own_inventory_events (
+                            condition_id, recv_ms, recv_monotonic_ns, capture_seq,
+                            event_type, yes_pos, no_pos, yes_avg_cost, no_avg_cost,
+                            paired_qty, residual_qty, usdc_available, tx_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["event_type"],
+                            rec["yes_pos"],
+                            rec["no_pos"],
+                            rec["yes_avg_cost"],
+                            rec["no_avg_cost"],
+                            rec["paired_qty"],
+                            rec["residual_qty"],
+                            rec["usdc_available"],
+                            rec["tx_hash"],
+                        ),
+                    )
+                    stats.own_inventory_rows += 1
+                continue
+
+            is_user_source = source.startswith("user")
+            # own order stream
+            if is_user_source or channel == CHANNEL_ORDER:
+                rec = normalize_order_event(env)
+                if rec:
+                    key = dedup_order_key(rec)
+                    if key in order_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    order_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO own_order_events (
+                            condition_id, recv_ms, recv_monotonic_ns, capture_seq,
+                            client_order_id, order_id, event_type, side, direction,
+                            price, size, remaining, status, reason, reject_kind,
+                            tx_hash, strategy_tag, round_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["client_order_id"],
+                            rec["order_id"],
+                            rec["event_type"],
+                            rec["side"],
+                            rec["direction"],
+                            rec["price"],
+                            rec["size"],
+                            rec["remaining"],
+                            rec["status"],
+                            rec["reason"],
+                            rec["reject_kind"],
+                            rec["tx_hash"],
+                            rec["strategy_tag"],
+                            rec["round_id"],
+                        ),
+                    )
+                    stats.own_order_rows += 1
+                continue
+
+            # market trades (standardized contract only)
+            if channel in {CHANNEL_LAST_TRADE, CHANNEL_TRADES_BACKFILL}:
+                rec = normalize_md_trade(env)
+                if rec:
+                    key = dedup_trade_key(rec)
+                    if key in trade_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    trade_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO md_trades (
+                            condition_id, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                            source_ts_ms, trade_id, market_side, taker_side,
+                            price, size, source_quality
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["trade_ts_ms"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["source_ts_ms"],
+                            rec["trade_id"],
+                            rec["market_side"],
+                            rec["taker_side"],
+                            rec["price"],
+                            rec["size"],
+                            rec["source_quality"],
+                        ),
+                    )
+                    stats.md_trades_rows += 1
+                continue
+
+            # market book (standardized contract only)
+            if channel in {CHANNEL_BOOK, CHANNEL_BBA}:
+                rec = normalize_book_row(env)
+                if rec:
+                    key = dedup_book_key(rec)
+                    cond = rec["condition_id"]
+                    if book_last.get(cond) == key:
+                        stats.dedup_skips += 1
+                        continue
+                    book_last[cond] = key
+                    cur.execute(
+                        """
+                        INSERT INTO md_book_l1 (
+                            condition_id, recv_ms, recv_monotonic_ns, capture_seq, source_ts_ms,
+                            yes_bid_px, yes_ask_px, no_bid_px, no_ask_px,
+                            yes_bid_sz, yes_ask_sz, no_bid_sz, no_ask_sz,
+                            source_kind
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["source_ts_ms"],
+                            rec["yes_bid_px"],
+                            rec["yes_ask_px"],
+                            rec["no_bid_px"],
+                            rec["no_ask_px"],
+                            rec["yes_bid_sz"],
+                            rec["yes_ask_sz"],
+                            rec["no_bid_sz"],
+                            rec["no_ask_sz"],
+                            rec["source_kind"],
+                        ),
+                    )
+                    stats.md_book_rows += 1
+
+        conn.commit()
+        conn.close()
+        return stats
+
+
+def build_replay_for_day(raw_root: Path, replay_root: Path, day: str) -> BuildStats:
+    raw_day_root = Path(raw_root) / day
+    replay_db_path = Path(replay_root) / day / "crypto_5m.sqlite"
+    builder = ReplayBuilder(raw_day_root=raw_day_root, replay_db_path=replay_db_path)
+    return builder.build()

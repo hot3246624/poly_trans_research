@@ -1,79 +1,106 @@
-# poly-datasource
+# poly_trans_research (BTC 5m Public Capture)
 
-## 🚀 Polymarket 数据获取与策略分析工具
+本仓库当前主线是 **BTC 5m public market data** 采集与回放，不依赖交易程序，也不默认加载任何私钥/API key。
 
-一个**完整的 Polymarket 数据分析平台**，不仅能获取交易数据，还能深度分析交易策略和市场模式。
+## 第一阶段范围
 
-### ✨ 核心特性
+- 只采 `BTC 5m`
+- 只采 `market + meta`
+- `user_ws` 默认关闭
+- 连续采样后构建 replay sqlite
+- 验收指标聚焦 `market_meta / md_book_l1 / md_trades`
 
-- **📊 交互式可视化 (`chart.html`)**: 生成气泡图，直观展示交易流向与资金分布。
-- **📉 深度报表 (`analysis_table.html`)**: 自动生成包含 **Pair Cost (套利成本)**、**Net Exposure (净敞口)** 和 **Locked Profit (锁定利润)** 的审计级报表。
-- **⚡ 高性能**: 单脚本集成数据抓取与分析，无需复杂配置。
+## 目录
 
-### 🔧 安装与依赖
-
-1. 确保已安装 Python 3.10+。
-2. 安装所需依赖库：
-
-```bash
-pip install requests numpy plotly
+```text
+.
+├── cfdata.py
+├── config/
+│   ├── capture.sources.example.json
+│   ├── research.env
+│   └── research.env.example
+├── data/
+│   ├── raw/
+│   └── replay/
+├── docs/
+│   └── PLAN_Codex.md
+└── src/completion_first_data/
 ```
 
-### 🛠 使用方法
-
-本项目目前推荐使用 **`interactive_chart.py`**作为核心工具，支持两种模式：
-
-#### 模式 1：在线抓取并分析 (API Mode)
-直接从 Polymarket 获取最新交易数据并生成报表。
+## 安装
 
 ```bash
-# 格式: python3 interactive_chart.py "市场名称关键词" <钱包地址>
-
-# 示例:
-python3 interactive_chart.py "Bitcoin Up or Down" 0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d
+pip install -r requirements.txt
 ```
-> **提示**: 建议使用尽可能详细的市场名称（如包含日期/时间），以确保抓取准确。
 
-#### 模式 2：本地文件分析 (Offline Mode)
-对已下载的 `trades.json` 文件进行离线复盘，无需重复请求 API。
+## Research 默认配置
+
+`config/research.env`（默认从 `config/research.env.example` 复制）关键项：
+
+- `CF_MARKET_PREFIXES=btc-updown-5m`
+- `CF_MARKET_CHANNELS=book,last_trade_price`
+- `CF_DISABLE_USER_WS=true`
+- `CF_META_ACTIVE_ONLY=true`
+- `CF_MAX_MARKETS_PER_PREFIX=1`
+- `CF_META_INTERVAL_SEC=20`
+- `CF_RAW_ROOT=data/raw`
+- `CF_REPLAY_ROOT=data/replay`
+
+## 采集
+
+### 1) sidecar（推荐）
 
 ```bash
-# 格式: python3 interactive_chart.py <JSON文件路径>
-
-# 示例:
-python3 interactive_chart.py trades.json
+python cfdata.py capture-sidecar-env --env-file config/research.env
 ```
 
-### 📂 输出文件说明
+这会：
 
-运行脚本后，当前目录下会生成以下核心文件：
+- 从 `market_meta` 解析当前活跃 BTC 5m round 的 `yes/no token_id`
+- 按官方 `type=market` 订阅 schema 连接 market WS
+- sidecar 内直接标准化写入 `book` 与 `last_trade_price`
+- 当轮次切换（token 集变化）时自动重连切换
 
-| 文件名 | 说明 |
-|------|-------------|
-| **`chart.html`** | 交互式可视化图表（气泡图、曲线图），浏览器打开即可查看。 |
-| **`analysis_table.html`** | **核心分析报表**。包含每笔交易的成本核算与策略逻辑还原。 |
-| `trades.json` | (仅API模式) 原始交易数据备份。 |
-
-### 📜 经典图表工具 (chartgenerator.py)
-
-如果您习惯使用旧版工具，我们也已将其恢复并修复：
+### 2) 只采 meta
 
 ```bash
-# 用法: python3 chartgenerator.py <JSON文件路径>
-python3 chartgenerator.py trades.json
+python cfdata.py capture-meta --raw-root data/raw --active-only
 ```
-生成 `chart.png` 静态图片。
 
-### 📊 报表核心指标解读
+## 构建回放
 
-在 `analysis_table.html` 中，您可以关注以下关键列来还原策略逻辑：
+```bash
+python cfdata.py build-replay --raw-root data/raw --replay-root data/replay --day 2026-04-26
+```
 
-- **Pair Cost (组合成本)**: `买入YES均价 + 买入NO均价`。
-    - **< 1.00 (绿色)**: 策略已锁定套利利润（无风险）。
-    - **> 1.00 (红色)**: 策略当前处于风险敞口状态（Inventory Risk）。
-- **Net Diff**: YES 与 NO 的净持仓差额。
-- **Locked Profit**: 假设持有到期时的锁定利润（已扣除所有成本）。
+输出：
 
----
+- `data/replay/2026-04-26/crypto_5m.sqlite`
 
-**注意**: 若您需要使用旧版脚本 (`chartgenerator.py` 等)，请查阅历史文档或自行恢复。本项目现已全面转向 `interactive_chart.py` 单脚本工作流。
+## 验证
+
+```bash
+python cfdata.py validate-replay --replay-root data/replay --day 2026-04-26 --output data/replay/2026-04-26/validation.json
+```
+
+当前 validator 第一阶段默认检查：
+
+- `market_meta` 是否存在且覆盖完整
+- `md_book_l1` round 覆盖率是否 >= 95%
+- `md_trades` round 覆盖率是否 >= 95%
+- `md_book_l1 / md_trades` 是否非空
+
+## 3 天采样建议
+
+```bash
+# Day 1-3 持续跑 sidecar
+python cfdata.py capture-sidecar-env --env-file config/research.env
+
+# 每天 UTC 切日后构建回放
+python cfdata.py build-replay --raw-root data/raw --replay-root data/replay --day <UTC-YYYY-MM-DD>
+python cfdata.py validate-replay --replay-root data/replay --day <UTC-YYYY-MM-DD>
+```
+
+## user_ws 预留
+
+仓库保留了 `user_ws` 配置结构与可选参数位（`CF_USER_WS_ENABLED` 等），但第一阶段默认关闭，README 主流程不依赖 auth。
