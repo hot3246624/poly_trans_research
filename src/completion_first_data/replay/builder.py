@@ -11,6 +11,9 @@ from ..capture.envelope import RawEnvelope
 from ..constants import (
     CHANNEL_BOOK,
     CHANNEL_BBA,
+    CHANNEL_XUAN_ACTIVITY,
+    CHANNEL_XUAN_POLL_LOG,
+    CHANNEL_XUAN_TRADES,
     CHANNEL_LAST_TRADE,
     CHANNEL_MARKET_META,
     CHANNEL_MARKET_RESOLVED,
@@ -29,6 +32,9 @@ from .normalize import (
     normalize_md_trade,
     normalize_order_event,
     normalize_settlement,
+    normalize_xuan_activity,
+    normalize_xuan_poll_log,
+    normalize_xuan_trade,
 )
 from .schema import init_schema
 
@@ -40,6 +46,9 @@ class BuildStats:
     market_meta_rows: int = 0
     md_book_rows: int = 0
     md_trades_rows: int = 0
+    xuan_trades_rows: int = 0
+    xuan_activity_rows: int = 0
+    xuan_poll_log_rows: int = 0
     own_order_rows: int = 0
     own_inventory_rows: int = 0
     settlement_rows: int = 0
@@ -77,6 +86,9 @@ class ReplayBuilder:
 
         book_last: Dict[str, tuple] = {}
         trade_seen: set = set()
+        xuan_trade_seen: set = set()
+        xuan_activity_seen: set = set()
+        xuan_poll_seen: set = set()
         order_seen: set = set()
         settlement_seen: set = set()
 
@@ -233,9 +245,9 @@ class ReplayBuilder:
                         """
                         INSERT INTO md_trades (
                             condition_id, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
-                            source_ts_ms, trade_id, market_side, taker_side,
-                            price, size, source_quality
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            source_ts_ms, trade_id, market_side, taker_side, maker_address, taker_address,
+                            price, size, source_quality, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["condition_id"],
@@ -247,9 +259,12 @@ class ReplayBuilder:
                             rec["trade_id"],
                             rec["market_side"],
                             rec["taker_side"],
+                            rec["maker_address"],
+                            rec["taker_address"],
                             rec["price"],
                             rec["size"],
                             rec["source_quality"],
+                            rec["raw_json"],
                         ),
                     )
                     stats.md_trades_rows += 1
@@ -271,8 +286,8 @@ class ReplayBuilder:
                             condition_id, recv_ms, recv_monotonic_ns, capture_seq, source_ts_ms,
                             yes_bid_px, yes_ask_px, no_bid_px, no_ask_px,
                             yes_bid_sz, yes_ask_sz, no_bid_sz, no_ask_sz,
-                            source_kind
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            source_kind, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["condition_id"],
@@ -289,9 +304,142 @@ class ReplayBuilder:
                             rec["no_bid_sz"],
                             rec["no_ask_sz"],
                             rec["source_kind"],
+                            rec["raw_json"],
                         ),
                     )
                     stats.md_book_rows += 1
+                continue
+
+            if channel == CHANNEL_XUAN_TRADES:
+                rec = normalize_xuan_trade(env)
+                if rec:
+                    key = (
+                        rec["user"],
+                        rec["tx_hash"] or "",
+                        rec["trade_id"] or "",
+                        rec["trade_ts_ms"],
+                        rec["condition_id"] or "",
+                        rec["price"],
+                        rec["size"],
+                    )
+                    if key in xuan_trade_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    xuan_trade_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO xuan_trades (
+                            user, poll_ts_ms, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                            condition_id, slug, event_slug, title, outcome, side,
+                            price, size, asset, proxy_wallet, tx_hash, trade_id,
+                            source_quality, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["user"],
+                            rec["poll_ts_ms"],
+                            rec["trade_ts_ms"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["condition_id"],
+                            rec["slug"],
+                            rec["event_slug"],
+                            rec["title"],
+                            rec["outcome"],
+                            rec["side"],
+                            rec["price"],
+                            rec["size"],
+                            rec["asset"],
+                            rec["proxy_wallet"],
+                            rec["tx_hash"],
+                            rec["trade_id"],
+                            rec["source_quality"],
+                            rec["raw_json"],
+                        ),
+                    )
+                    stats.xuan_trades_rows += 1
+                continue
+
+            if channel == CHANNEL_XUAN_ACTIVITY:
+                rec = normalize_xuan_activity(env)
+                if rec:
+                    key = (
+                        rec["user"],
+                        rec["tx_hash"] or "",
+                        rec["activity_ts_ms"],
+                        rec["activity_type"] or "",
+                        rec["condition_id"] or "",
+                    )
+                    if key in xuan_activity_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    xuan_activity_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO xuan_activity (
+                            user, poll_ts_ms, activity_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                            condition_id, slug, event_slug, title, activity_type, outcome, side,
+                            price, size, usdc_size, asset, proxy_wallet, tx_hash,
+                            source_quality, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["user"],
+                            rec["poll_ts_ms"],
+                            rec["activity_ts_ms"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["condition_id"],
+                            rec["slug"],
+                            rec["event_slug"],
+                            rec["title"],
+                            rec["activity_type"],
+                            rec["outcome"],
+                            rec["side"],
+                            rec["price"],
+                            rec["size"],
+                            rec["usdc_size"],
+                            rec["asset"],
+                            rec["proxy_wallet"],
+                            rec["tx_hash"],
+                            rec["source_quality"],
+                            rec["raw_json"],
+                        ),
+                    )
+                    stats.xuan_activity_rows += 1
+                continue
+
+            if channel == CHANNEL_XUAN_POLL_LOG:
+                rec = normalize_xuan_poll_log(env)
+                if rec:
+                    key = (rec["user"], rec["endpoint"], rec["poll_ts_ms"])
+                    if key in xuan_poll_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    xuan_poll_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO xuan_poll_log (
+                            user, endpoint, poll_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                            rows, max_ts_ms, ok, error
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["user"],
+                            rec["endpoint"],
+                            rec["poll_ts_ms"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["rows"],
+                            rec["max_ts_ms"],
+                            rec["ok"],
+                            rec["error"],
+                        ),
+                    )
+                    stats.xuan_poll_log_rows += 1
 
         conn.commit()
         conn.close()
@@ -301,5 +449,9 @@ class ReplayBuilder:
 def build_replay_for_day(raw_root: Path, replay_root: Path, day: str) -> BuildStats:
     raw_day_root = Path(raw_root) / day
     replay_db_path = Path(replay_root) / day / "crypto_5m.sqlite"
+    # Rebuild day DB from scratch to keep rolling rebuild idempotent.
+    for path in (replay_db_path, Path(f"{replay_db_path}-wal"), Path(f"{replay_db_path}-shm")):
+        if path.exists():
+            path.unlink()
     builder = ReplayBuilder(raw_day_root=raw_day_root, replay_db_path=replay_db_path)
     return builder.build()

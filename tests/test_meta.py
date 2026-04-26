@@ -28,6 +28,25 @@ class MetaNormalizeTests(unittest.TestCase):
         self.assertEqual(rec.interval_sec, 300)
         self.assertEqual(rec.symbol, "BTC")
 
+    def test_normalize_market_meta_accepts_ms_slug_timestamp(self) -> None:
+        market = {
+            "conditionId": "0xcond_ms",
+            "slug": "btc-updown-5m-1777171500000",
+            # Intentionally invalid 5m window from Gamma fields to force slug fallback.
+            "startDate": "2026-04-26T00:00:00Z",
+            "endDate": "2026-04-27T00:00:00Z",
+            "clobTokenIds": '["101", "201"]',
+            "question": "Bitcoin Up or Down - April 26, 08:45AM-08:50AM ET",
+        }
+
+        rec = normalize_market_meta(market)
+        self.assertIsNotNone(rec)
+        assert rec is not None
+
+        self.assertEqual(rec.start_ms, 1777171500000)
+        self.assertEqual(rec.end_ms, 1777171800000)
+        self.assertEqual(rec.interval_sec, 300)
+
 
 if __name__ == "__main__":
     unittest.main()

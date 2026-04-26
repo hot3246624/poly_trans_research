@@ -27,6 +27,23 @@
     "enabled": true,
     "interval_sec": 20,
     "active_only": true,
-    "conditional_get": true
+    "conditional_get": true,
+    "round_switch_delay_sec": 8
+  },
+  "settlement_poll": {
+    "enabled": true,
+    "interval_sec": 20,
+    "per_condition_cooldown_sec": 30,
+    "retention_hours": 12
+  },
+  "xuan_poll": {
+    "enabled": false,
+    "user": "",
+    "interval_sec": 300,
+    "aggressive_interval_sec": 60,
+    "aggressive_trade_threshold": 500,
+    "page_limit": 500,
+    "max_pages": 30,
+    "cursor_path": ""
   }
 }

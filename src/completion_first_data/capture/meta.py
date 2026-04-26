@@ -77,9 +77,23 @@ def _slug_round_window_ms(slug: str) -> Optional[tuple[int, int]]:
     if not m:
         return None
     try:
-        start_ms = int(m.group(1)) * 1000
+        raw_epoch = int(m.group(1))
     except ValueError:
         return None
+
+    # Slug suffix has appeared as both seconds and milliseconds across feeds.
+    # Normalize to unix milliseconds.
+    if raw_epoch <= 0:
+        return None
+    if raw_epoch >= 10_000_000_000_000_000:  # ns
+        start_ms = raw_epoch // 1_000_000
+    elif raw_epoch >= 1_000_000_000_000_000:  # us
+        start_ms = raw_epoch // 1_000
+    elif raw_epoch >= 1_000_000_000_000:  # ms
+        start_ms = raw_epoch
+    else:  # seconds
+        start_ms = raw_epoch * 1000
+
     end_ms = start_ms + (ROUND_INTERVAL_TARGET_SEC * 1000)
     return start_ms, end_ms
 

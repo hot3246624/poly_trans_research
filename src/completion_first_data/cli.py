@@ -17,11 +17,14 @@ from .capture.meta import MarketMetaFetchState, backfill_trades_once, capture_ma
 from .capture.raw_store import RawCaptureStore
 from .capture.websocket_sidecar import (
     MetaPollConfig,
+    SettlementPollConfig,
     SidecarConfig,
     WsSourceConfig,
     load_sidecar_config,
     run_sidecar,
 )
+from .capture.xuan_poller import XuanPollConfig
+from .quality.startup_audit import save_startup_audit_report, run_startup_audit
 from .quality.validator import save_report, validate_replay_db
 from .replay.builder import build_replay_for_day
 
@@ -139,8 +142,25 @@ def cmd_init_layout(args: argparse.Namespace) -> int:
                 "enabled": True,
                 "interval_sec": 20,
                 "active_only": True,
-                "conditional_get": True
-            }
+                "conditional_get": True,
+                "round_switch_delay_sec": 8
+            },
+            "settlement_poll": {
+                "enabled": True,
+                "interval_sec": 20,
+                "per_condition_cooldown_sec": 30,
+                "retention_hours": 12
+            },
+            "xuan_poll": {
+                "enabled": False,
+                "user": "",
+                "interval_sec": 300,
+                "aggressive_interval_sec": 60,
+                "aggressive_trade_threshold": 500,
+                "page_limit": 500,
+                "max_pages": 30,
+                "cursor_path": ""
+            },
         }
         cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         LOG.info("wrote %s", cfg_path)
@@ -158,9 +178,21 @@ def cmd_init_layout(args: argparse.Namespace) -> int:
                     "CF_META_ACTIVE_ONLY=true",
                     "CF_MAX_MARKETS_PER_PREFIX=1",
                     "CF_META_INTERVAL_SEC=20",
+                    "CF_META_SWITCH_DELAY_SEC=8",
+                    "CF_SETTLEMENT_POLL_ENABLED=true",
+                    "CF_SETTLEMENT_POLL_SEC=20",
+                    "CF_SETTLEMENT_POLL_COOLDOWN_SEC=30",
                     "CF_RAW_ROOT=data/raw",
                     "CF_REPLAY_ROOT=data/replay",
                     "CF_USER_WS_ENABLED=false",
+                    "CF_XUAN_POLL_ENABLED=false",
+                    "# CF_XUAN_USER=0x...",
+                    "CF_XUAN_POLL_SEC=300",
+                    "CF_XUAN_POLL_AGGRESSIVE_SEC=60",
+                    "CF_XUAN_POLL_AGGRESSIVE_THRESHOLD=500",
+                    "CF_XUAN_POLL_PAGE_LIMIT=500",
+                    "CF_XUAN_POLL_MAX_PAGES=30",
+                    "# CF_XUAN_CURSOR_PATH=data/raw/.xuan_cursor.json",
                     "POLYMARKET_WS_BASE_URL=wss://ws-subscriptions-clob.polymarket.com/ws",
                     "# POLYMARKET_FUNDER_ADDRESS=",
                     "# CF_API_KEY=",
@@ -249,6 +281,18 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
     env_user_ws_enabled = _parse_bool_env(env, "CF_USER_WS_ENABLED", not env_disable_user_ws)
     env_meta_active_only = _parse_bool_env(env, "CF_META_ACTIVE_ONLY", True)
     env_meta_interval_sec = max(1, _parse_int_env(env, "CF_META_INTERVAL_SEC", 20))
+    env_meta_switch_delay_sec = max(0, _parse_int_env(env, "CF_META_SWITCH_DELAY_SEC", 8))
+    env_settlement_poll_enabled = _parse_bool_env(env, "CF_SETTLEMENT_POLL_ENABLED", True)
+    env_settlement_poll_sec = max(1, _parse_int_env(env, "CF_SETTLEMENT_POLL_SEC", 20))
+    env_settlement_poll_cooldown_sec = max(1, _parse_int_env(env, "CF_SETTLEMENT_POLL_COOLDOWN_SEC", 30))
+    env_xuan_poll_enabled = _parse_bool_env(env, "CF_XUAN_POLL_ENABLED", False)
+    env_xuan_user = str(env.get("CF_XUAN_USER", "") or "").strip()
+    env_xuan_poll_sec = max(1, _parse_int_env(env, "CF_XUAN_POLL_SEC", 300))
+    env_xuan_aggressive_sec = max(1, _parse_int_env(env, "CF_XUAN_POLL_AGGRESSIVE_SEC", 60))
+    env_xuan_aggressive_threshold = max(1, _parse_int_env(env, "CF_XUAN_POLL_AGGRESSIVE_THRESHOLD", 500))
+    env_xuan_page_limit = max(1, _parse_int_env(env, "CF_XUAN_POLL_PAGE_LIMIT", 500))
+    env_xuan_max_pages = max(1, _parse_int_env(env, "CF_XUAN_POLL_MAX_PAGES", 30))
+    env_xuan_cursor_path = str(env.get("CF_XUAN_CURSOR_PATH", "") or "").strip() or None
     env_raw_root = env.get("CF_RAW_ROOT", "data/raw").strip() or "data/raw"
 
     if args.market_prefix:
@@ -258,6 +302,10 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
     if not prefixes:
         raise SystemExit("No market prefixes found. Set CF_MARKET_PREFIXES or pass --market-prefix.")
     max_markets_per_prefix = args.max_markets_per_prefix if args.max_markets_per_prefix is not None else env_max_markets
+    xuan_user = args.xuan_user.strip() if args.xuan_user else env_xuan_user
+    xuan_enabled = env_xuan_poll_enabled if args.xuan_poll_enabled is None else args.xuan_poll_enabled
+    if args.disable_xuan_poll:
+        xuan_enabled = False
 
     market_ws = WsSourceConfig(
         name="market_ws",
@@ -289,21 +337,61 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
             interval_sec=args.meta_interval_sec if args.meta_interval_sec is not None else env_meta_interval_sec,
             active_only=args.meta_active_only if args.meta_active_only is not None else env_meta_active_only,
             conditional_get=not args.disable_meta_conditional_get,
+            round_switch_delay_sec=(
+                args.meta_switch_delay_sec
+                if args.meta_switch_delay_sec is not None
+                else env_meta_switch_delay_sec
+            ),
         ),
         market_prefixes=prefixes,
         market_channels=channels,
         max_markets_per_prefix=max(0, max_markets_per_prefix),
         debug_raw_market_ws=args.debug_raw_market_ws,
+        settlement_poll=SettlementPollConfig(
+            enabled=(
+                env_settlement_poll_enabled
+                if args.settlement_poll_enabled is None
+                else args.settlement_poll_enabled
+            )
+            and (not args.disable_settlement_poll),
+            interval_sec=args.settlement_poll_sec if args.settlement_poll_sec is not None else env_settlement_poll_sec,
+            per_condition_cooldown_sec=(
+                args.settlement_poll_cooldown_sec
+                if args.settlement_poll_cooldown_sec is not None
+                else env_settlement_poll_cooldown_sec
+            ),
+            retention_hours=12,
+        ),
+        xuan_poll=XuanPollConfig(
+            enabled=xuan_enabled and bool(xuan_user),
+            user=xuan_user,
+            interval_sec=args.xuan_poll_sec if args.xuan_poll_sec is not None else env_xuan_poll_sec,
+            aggressive_interval_sec=(
+                args.xuan_poll_aggressive_sec
+                if args.xuan_poll_aggressive_sec is not None
+                else env_xuan_aggressive_sec
+            ),
+            aggressive_trade_threshold=(
+                args.xuan_poll_aggressive_threshold
+                if args.xuan_poll_aggressive_threshold is not None
+                else env_xuan_aggressive_threshold
+            ),
+            page_limit=args.xuan_poll_page_limit if args.xuan_poll_page_limit is not None else env_xuan_page_limit,
+            max_pages=args.xuan_poll_max_pages if args.xuan_poll_max_pages is not None else env_xuan_max_pages,
+            cursor_path=args.xuan_cursor_path if args.xuan_cursor_path is not None else env_xuan_cursor_path,
+        ),
     )
 
     LOG.info(
-        "running research sidecar from env file, prefixes=%s, channels=%s, per_prefix_limit=%d, user_ws=%s, meta_active_only=%s, meta_conditional=%s",
+        "running sidecar from env, prefixes=%s, channels=%s, per_prefix_limit=%d, user_ws=%s, meta_active_only=%s, meta_conditional=%s, settlement_poll=%s, xuan_poll=%s",
         ",".join(prefixes),
         ",".join(channels),
         max(0, max_markets_per_prefix),
         "enabled" if user_ws.enabled else "disabled",
         str(cfg.meta_poll.active_only).lower(),
         "on" if not args.disable_meta_conditional_get else "off",
+        "enabled" if cfg.settlement_poll and cfg.settlement_poll.enabled else "disabled",
+        "enabled" if cfg.xuan_poll and cfg.xuan_poll.enabled else "disabled",
     )
     asyncio.run(run_sidecar(cfg, duration_sec=args.duration_sec))
     return 0
@@ -315,6 +403,25 @@ def cmd_build_replay(args: argparse.Namespace) -> int:
     replay_root = args.replay_root or os.getenv("CF_REPLAY_ROOT", "data/replay")
     stats = build_replay_for_day(Path(raw_root), Path(replay_root), day)
     LOG.info("build done: %s", json.dumps(stats.as_dict(), ensure_ascii=False))
+    return 0
+
+
+def cmd_build_replay_rolling(args: argparse.Namespace) -> int:
+    raw_root = args.raw_root or os.getenv("CF_RAW_ROOT", "data/raw")
+    replay_root = args.replay_root or os.getenv("CF_REPLAY_ROOT", "data/replay")
+    hours = max(1, int(args.hours))
+
+    now = dt.datetime.now(dt.timezone.utc)
+    start = now - dt.timedelta(hours=hours)
+    days: List[str] = []
+    cursor = start.date()
+    while cursor <= now.date():
+        days.append(cursor.strftime("%Y-%m-%d"))
+        cursor += dt.timedelta(days=1)
+
+    for day in days:
+        stats = build_replay_for_day(Path(raw_root), Path(replay_root), day)
+        LOG.info("rolling build done [%s]: %s", day, json.dumps(stats.as_dict(), ensure_ascii=False))
     return 0
 
 
@@ -332,6 +439,30 @@ def cmd_validate_replay(args: argparse.Namespace) -> int:
         LOG.info("saved validation report -> %s", args.output)
 
     LOG.info("validation: %s", json.dumps(report.as_dict(), ensure_ascii=False))
+    return 0 if report.all_passed else 2
+
+
+def cmd_audit_startup(args: argparse.Namespace) -> int:
+    replay_root = args.replay_root or os.getenv("CF_REPLAY_ROOT", "data/replay")
+    if args.db_path:
+        db = Path(args.db_path)
+    else:
+        day = args.day or _default_day()
+        db = Path(replay_root) / day / "crypto_5m.sqlite"
+
+    report = run_startup_audit(
+        db,
+        taker_side_null_max_ratio=args.taker_side_null_max_ratio,
+        min_market_meta_rounds=args.min_market_meta_rounds,
+        min_settlement_rows=args.min_settlement_rows,
+        min_xuan_poll_points=args.min_xuan_poll_points,
+        max_abs_avg_trade_latency_ms=args.max_abs_avg_trade_latency_ms,
+    )
+    if args.output:
+        save_startup_audit_report(report, Path(args.output))
+        LOG.info("saved startup audit report -> %s", args.output)
+
+    LOG.info("startup_audit: %s", json.dumps(report.as_dict(), ensure_ascii=False))
     return 0 if report.all_passed else 2
 
 
@@ -397,9 +528,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--disable-market-ws", action="store_true")
     p.add_argument("--disable-user-ws", action="store_true")
     p.add_argument("--meta-interval-sec", type=int, help="Override CF_META_INTERVAL_SEC")
+    p.add_argument("--meta-switch-delay-sec", type=int, help="Delay subscription switch after round change")
     p.add_argument("--meta-active-only", dest="meta_active_only", action="store_true", default=None)
     p.add_argument("--meta-include-inactive", dest="meta_active_only", action="store_false")
     p.add_argument("--disable-meta-conditional-get", action="store_true")
+    p.add_argument("--settlement-poll-enabled", dest="settlement_poll_enabled", action="store_true", default=None)
+    p.add_argument("--disable-settlement-poll", action="store_true")
+    p.add_argument("--settlement-poll-sec", type=int)
+    p.add_argument("--settlement-poll-cooldown-sec", type=int)
+    p.add_argument("--xuan-poll-enabled", dest="xuan_poll_enabled", action="store_true", default=None)
+    p.add_argument("--disable-xuan-poll", action="store_true")
+    p.add_argument("--xuan-user")
+    p.add_argument("--xuan-poll-sec", type=int)
+    p.add_argument("--xuan-poll-aggressive-sec", type=int)
+    p.add_argument("--xuan-poll-aggressive-threshold", type=int)
+    p.add_argument("--xuan-poll-page-limit", type=int)
+    p.add_argument("--xuan-poll-max-pages", type=int)
+    p.add_argument("--xuan-cursor-path")
     p.add_argument("--debug-raw-market-ws", action="store_true")
     p.set_defaults(func=cmd_capture_sidecar_env)
 
@@ -409,6 +554,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--day", help="UTC day YYYY-MM-DD")
     p.set_defaults(func=cmd_build_replay)
 
+    p = sub.add_parser("build-replay-rolling", help="Build replay sqlite for days in a rolling UTC window")
+    p.add_argument("--raw-root")
+    p.add_argument("--replay-root")
+    p.add_argument("--hours", type=int, default=24, help="Rolling window size in hours")
+    p.set_defaults(func=cmd_build_replay_rolling)
+
     p = sub.add_parser("validate-replay", help="Validate replay DB against BTC 5m public-capture gates")
     p.add_argument("--replay-root")
     p.add_argument("--day", help="UTC day YYYY-MM-DD")
@@ -416,6 +567,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gap-threshold-ms", type=int, default=0, help="Optional max allowed intra-round gap (<=0 disables)")
     p.add_argument("--output", help="Save report json path")
     p.set_defaults(func=cmd_validate_replay)
+
+    p = sub.add_parser("audit-startup", help="Run startup readiness audit checks for 1h pre-launch gate")
+    p.add_argument("--replay-root")
+    p.add_argument("--day", help="UTC day YYYY-MM-DD")
+    p.add_argument("--db-path", help="Override explicit sqlite path")
+    p.add_argument("--output", help="Save report json path")
+    p.add_argument("--taker-side-null-max-ratio", type=float, default=0.05)
+    p.add_argument("--min-market-meta-rounds", type=int, default=12)
+    p.add_argument("--min-settlement-rows", type=int, default=1)
+    p.add_argument("--min-xuan-poll-points", type=int, default=12)
+    p.add_argument("--max-abs-avg-trade-latency-ms", type=int, default=60000)
+    p.set_defaults(func=cmd_audit_startup)
 
     return parser
 

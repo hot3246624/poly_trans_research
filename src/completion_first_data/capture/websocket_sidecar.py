@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import requests
+
 from .envelope import pick_condition_id
+from .settlement import fetch_condition_settlement
 from .meta import (
     MarketMetaFetchState,
     MarketMetaRecord,
@@ -18,11 +21,14 @@ from .meta import (
     write_market_meta_records,
 )
 from .raw_store import RawCaptureStore
+from .xuan_poller import XuanPollConfig, run_xuan_poll_worker
 from ..constants import (
     CHANNEL_BOOK,
     CHANNEL_LAST_TRADE,
+    CHANNEL_MARKET_RESOLVED,
     DEFAULT_META_POLL_SEC,
     SOURCE_KIND_MARKET_WS,
+    SOURCE_KIND_SETTLEMENT,
 )
 
 LOG = logging.getLogger(__name__)
@@ -46,6 +52,15 @@ class MetaPollConfig:
     interval_sec: int = DEFAULT_META_POLL_SEC
     active_only: bool = False
     conditional_get: bool = True
+    round_switch_delay_sec: int = 8
+
+
+@dataclass(slots=True)
+class SettlementPollConfig:
+    enabled: bool = True
+    interval_sec: int = 20
+    per_condition_cooldown_sec: int = 30
+    retention_hours: int = 12
 
 
 @dataclass(slots=True)
@@ -58,6 +73,8 @@ class SidecarConfig:
     market_channels: List[str] = field(default_factory=lambda: ["book", "last_trade_price"])
     max_markets_per_prefix: int = 1
     debug_raw_market_ws: bool = False
+    settlement_poll: Optional[SettlementPollConfig] = None
+    xuan_poll: Optional[XuanPollConfig] = None
 
 
 @dataclass(slots=True)
@@ -219,6 +236,27 @@ def load_sidecar_config(path: str | Path, raw_root_override: Optional[str] = Non
         interval_sec=int(mp.get("interval_sec", DEFAULT_META_POLL_SEC)),
         active_only=bool(mp.get("active_only", False)),
         conditional_get=bool(mp.get("conditional_get", True)),
+        round_switch_delay_sec=max(0, int(mp.get("round_switch_delay_sec", 8))),
+    )
+
+    sp = cfg.get("settlement_poll") or {}
+    settlement_poll = SettlementPollConfig(
+        enabled=bool(sp.get("enabled", True)),
+        interval_sec=max(1, int(sp.get("interval_sec", 20))),
+        per_condition_cooldown_sec=max(1, int(sp.get("per_condition_cooldown_sec", 30))),
+        retention_hours=max(1, int(sp.get("retention_hours", 12))),
+    )
+
+    xp = cfg.get("xuan_poll") or {}
+    xuan_poll = XuanPollConfig(
+        enabled=bool(xp.get("enabled", False)),
+        user=str(xp.get("user") or ""),
+        interval_sec=max(1, int(xp.get("interval_sec", 300))),
+        aggressive_interval_sec=max(1, int(xp.get("aggressive_interval_sec", 60))),
+        aggressive_trade_threshold=max(1, int(xp.get("aggressive_trade_threshold", 500))),
+        page_limit=max(1, int(xp.get("page_limit", 500))),
+        max_pages=max(1, int(xp.get("max_pages", 30))),
+        cursor_path=str(xp.get("cursor_path") or "") or None,
     )
 
     return SidecarConfig(
@@ -230,6 +268,8 @@ def load_sidecar_config(path: str | Path, raw_root_override: Optional[str] = Non
         market_channels=list(cfg.get("market_channels") or ["book", "last_trade_price"]),
         max_markets_per_prefix=int(cfg.get("max_markets_per_prefix", 1)),
         debug_raw_market_ws=bool(cfg.get("debug_raw_market_ws", False)),
+        settlement_poll=settlement_poll,
+        xuan_poll=xuan_poll,
     )
 
 
@@ -370,6 +410,20 @@ def _parse_size(value: Any) -> Optional[float]:
     return max(0.0, v)
 
 
+def _parse_direction(value: Any) -> Optional[str]:
+    txt = str(value or "").strip().upper()
+    if txt in {"BUY", "SELL"}:
+        return txt
+    return None
+
+
+def _parse_address(value: Any) -> Optional[str]:
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    return txt
+
+
 def _parse_ts_ms(value: Any) -> Optional[int]:
     v = _parse_float(value)
     if v is None:
@@ -488,6 +542,7 @@ def _handle_book_snapshot(
     if full is None:
         return out
     full["condition_id"] = condition_id
+    full["raw_json"] = msg
     out.append((CHANNEL_BOOK, full, condition_id))
     return out
 
@@ -526,6 +581,7 @@ def _handle_price_change(
         if full is None:
             continue
         full["condition_id"] = condition_id
+        full["raw_json"] = change
         out.append((CHANNEL_BOOK, full, condition_id))
 
     return out
@@ -561,6 +617,7 @@ def _handle_best_bid_ask(
     if full is None:
         return out
     full["condition_id"] = condition_id
+    full["raw_json"] = msg
     out.append((CHANNEL_BOOK, full, condition_id))
     return out
 
@@ -596,11 +653,27 @@ def _handle_last_trade_price(
         "condition_id": condition_id,
         "trade_id": trade_id,
         "market_side": market_side,
+        "taker_side": _parse_direction(msg.get("taker_side") or msg.get("side")),
+        "maker_address": _parse_address(
+            msg.get("maker_address")
+            or msg.get("maker")
+            or msg.get("maker_proxy_wallet")
+            or msg.get("makerProxyWallet")
+        ),
+        "taker_address": _parse_address(
+            msg.get("taker_address")
+            or msg.get("taker")
+            or msg.get("proxyWallet")
+            or msg.get("proxy_wallet")
+            or msg.get("taker_proxy_wallet")
+            or msg.get("takerProxyWallet")
+        ),
         "price": price,
         "size": size,
         "trade_ts_ms": trade_ts_ms,
         "source_ts_ms": trade_ts_ms,
         "source_quality": "ws",
+        "raw_json": msg,
     }
     out.append((CHANNEL_LAST_TRADE, payload, condition_id))
     return out
@@ -787,8 +860,30 @@ async def _meta_poller(
     max_markets_per_prefix: int,
 ) -> None:
     fetch_state = MarketMetaFetchState() if cfg.conditional_get else None
+    pending_tracked: Optional[List[MarketMetaRecord]] = None
+    pending_apply_at_ms: Optional[int] = None
+
+    def _apply_selection(markets: Sequence[MarketMetaRecord], *, reason: str) -> None:
+        if selection_state is None or not market_prefixes:
+            return
+        changed = selection_state.update_from_markets(markets)
+        if changed:
+            snap = selection_state.snapshot()
+            LOG.info(
+                "selected active markets updated: conditions=%d assets=%d revision=%d (%s)",
+                len(snap.selected_condition_ids),
+                len(snap.asset_ids),
+                snap.revision,
+                reason,
+            )
 
     while not stop_event.is_set():
+        now_ms = int(time.time() * 1000)
+        if pending_tracked is not None and pending_apply_at_ms is not None and now_ms >= pending_apply_at_ms:
+            _apply_selection(pending_tracked, reason="delayed_switch")
+            pending_tracked = None
+            pending_apply_at_ms = None
+
         try:
             markets = fetch_crypto_5m_markets(active_only=cfg.active_only, fetch_state=fetch_state)
             if fetch_state is not None and fetch_state.last_poll_not_modified:
@@ -803,23 +898,103 @@ async def _meta_poller(
                     if market_prefixes
                     else list(markets)
                 )
+
+                # Guard against transient Gamma fetch failures returning empty sets.
+                # Keep the last good subscription instead of dropping all assets.
+                if selection_state is not None and market_prefixes and not tracked:
+                    snap = selection_state.snapshot()
+                    if snap.asset_ids:
+                        LOG.warning(
+                            "meta poll returned 0 tracked markets; keep previous selection (revision=%d, assets=%d)",
+                            snap.revision,
+                            len(snap.asset_ids),
+                        )
+                        await asyncio.sleep(max(1, cfg.interval_sec))
+                        continue
+
                 written = write_market_meta_records(raw_store, tracked)
                 LOG.info("meta poll captured %d markets (fetched=%d)", written, len(markets))
 
                 if selection_state is not None and market_prefixes:
-                    changed = selection_state.update_from_markets(tracked)
-                    if changed:
-                        snap = selection_state.snapshot()
-                        LOG.info(
-                            "selected active markets updated: conditions=%d assets=%d revision=%d",
-                            len(snap.selected_condition_ids),
-                            len(snap.asset_ids),
-                            snap.revision,
-                        )
+                    snap = selection_state.snapshot()
+                    current_sig = tuple(snap.selected_condition_ids)
+                    next_sig = tuple(m.condition_id for m in tracked)
+                    if current_sig != next_sig:
+                        delay_sec = max(0, int(cfg.round_switch_delay_sec))
+                        if delay_sec > 0 and snap.asset_ids:
+                            pending_tracked = list(tracked)
+                            pending_apply_at_ms = now_ms + (delay_sec * 1000)
+                            LOG.info(
+                                "detected round switch: keep old subscription for %ds before switching",
+                                delay_sec,
+                            )
+                        else:
+                            _apply_selection(tracked, reason="immediate_switch")
+                            pending_tracked = None
+                            pending_apply_at_ms = None
         except Exception:
             LOG.exception("meta poll failed")
 
         await asyncio.sleep(max(1, cfg.interval_sec))
+
+
+async def _settlement_poller(
+    raw_store: RawCaptureStore,
+    cfg: SettlementPollConfig,
+    stop_event: asyncio.Event,
+    *,
+    selection_state: MarketSelectionState,
+) -> None:
+    if not cfg.enabled:
+        return
+
+    session = requests.Session()
+    seen_conditions: Dict[str, int] = {}
+    next_check_ms: Dict[str, int] = {}
+    resolved_conditions: set[str] = set()
+
+    while not stop_event.is_set():
+        now_ms = int(time.time() * 1000)
+        snap = selection_state.snapshot()
+        for cid in snap.selected_condition_ids:
+            seen_conditions[cid] = now_ms
+
+        # Prune stale conditions to bound memory.
+        retention_ms = max(1, int(cfg.retention_hours)) * 3600 * 1000
+        stale_cids = [cid for cid, ts in seen_conditions.items() if now_ms - ts > retention_ms]
+        for cid in stale_cids:
+            seen_conditions.pop(cid, None)
+            next_check_ms.pop(cid, None)
+            resolved_conditions.discard(cid)
+
+        for cid in list(seen_conditions.keys()):
+            if cid in resolved_conditions:
+                continue
+            if now_ms < next_check_ms.get(cid, 0):
+                continue
+
+            try:
+                record = await asyncio.to_thread(fetch_condition_settlement, cid, session=session)
+            except Exception as exc:
+                LOG.warning("settlement poll failed for %s: %s", cid, exc)
+                next_check_ms[cid] = now_ms + (max(1, cfg.per_condition_cooldown_sec) * 1000)
+                continue
+
+            if not record:
+                next_check_ms[cid] = now_ms + (max(1, cfg.per_condition_cooldown_sec) * 1000)
+                continue
+
+            raw_store.write(
+                source=SOURCE_KIND_SETTLEMENT,
+                channel=CHANNEL_MARKET_RESOLVED,
+                payload_json=record,
+                condition_id=cid,
+                recv_unix_ms=now_ms,
+            )
+            resolved_conditions.add(cid)
+            LOG.info("settlement captured: condition=%s outcome=%s", cid, record.get("official_outcome"))
+
+        await asyncio.sleep(max(1, int(cfg.interval_sec)))
 
 
 async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None) -> None:
@@ -880,6 +1055,33 @@ async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None)
                     max_markets_per_prefix=config.max_markets_per_prefix,
                 ),
                 name="meta_poll",
+            )
+        )
+
+    if (
+        config.settlement_poll
+        and config.settlement_poll.enabled
+        and config.market_ws
+        and config.market_ws.enabled
+        and config.market_prefixes
+    ):
+        tasks.append(
+            asyncio.create_task(
+                _settlement_poller(
+                    raw_store,
+                    config.settlement_poll,
+                    stop_event,
+                    selection_state=selection_state,
+                ),
+                name="settlement_poll",
+            )
+        )
+
+    if config.xuan_poll and config.xuan_poll.enabled and config.xuan_poll.user.strip():
+        tasks.append(
+            asyncio.create_task(
+                run_xuan_poll_worker(raw_store, config.xuan_poll, stop_event),
+                name="xuan_poll",
             )
         )
 

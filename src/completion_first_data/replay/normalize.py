@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional, Tuple
 
 from ..capture.envelope import RawEnvelope
@@ -17,9 +18,17 @@ def as_int(value: Any) -> Optional[int]:
         n = float(value)
     except (TypeError, ValueError):
         return None
-    if n > 10_000_000_000_000:  # already ms-like
+
+    # Normalize common unix timestamp units to milliseconds.
+    # s  -> ms, ms -> ms, us -> ms, ns -> ms
+    a = abs(n)
+    if a >= 1_000_000_000_000_000_000:  # ns
+        return int(n / 1_000_000)
+    if a >= 1_000_000_000_000_000:  # us
+        return int(n / 1_000)
+    if a >= 1_000_000_000_000:  # ms
         return int(n)
-    if n > 1_000_000_000:  # seconds timestamp
+    if a >= 1_000_000_000:  # s
         return int(n * 1000)
     return int(n)
 
@@ -45,6 +54,18 @@ def pick(payload: Dict[str, Any], *keys: str) -> Any:
         if k in payload and payload[k] not in (None, ""):
             return payload[k]
     return None
+
+
+def as_json_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        txt = value.strip()
+        return txt or None
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return None
 
 
 def normalize_side(value: Any) -> Optional[str]:
@@ -208,10 +229,16 @@ def normalize_md_trade(env: RawEnvelope) -> Optional[Dict[str, Any]]:
         "source_ts_ms": infer_source_ts_ms(p),
         "trade_id": str(pick(p, "trade_id", "tradeId", "id") or "") or None,
         "market_side": market_side,
-        "taker_side": normalize_direction(pick(p, "taker_side", "takerSide")),
+        "taker_side": normalize_direction(pick(p, "taker_side", "takerSide", "side")),
+        "maker_address": str(pick(p, "maker_address", "makerAddress", "maker") or "") or None,
+        "taker_address": str(
+            pick(p, "taker_address", "takerAddress", "taker", "proxy_wallet", "proxyWallet") or ""
+        )
+        or None,
         "price": price,
         "size": size,
         "source_quality": str(pick(p, "source_quality") or ("ws" if env.source.startswith("market") else "unknown")),
+        "raw_json": as_json_text(pick(p, "raw_json")) or as_json_text(p),
     }
 
 
@@ -304,7 +331,89 @@ def normalize_book_row(env: RawEnvelope) -> Optional[Dict[str, Any]]:
         "capture_seq": env.capture_seq,
         "source_ts_ms": infer_source_ts_ms(p),
         "source_kind": env.source,
+        "raw_json": as_json_text(pick(p, "raw_json")) or as_json_text(p),
         **l1,
+    }
+
+
+def normalize_xuan_trade(env: RawEnvelope) -> Optional[Dict[str, Any]]:
+    p = env.payload_json
+    user = str(pick(p, "user") or "").strip()
+    if not user:
+        return None
+
+    return {
+        "user": user,
+        "poll_ts_ms": as_int(pick(p, "poll_ts_ms", "pollTsMs")) or env.recv_unix_ms,
+        "trade_ts_ms": as_int(pick(p, "trade_ts_ms", "tradeTsMs", "timestamp", "time")),
+        "recv_ms": env.recv_unix_ms,
+        "recv_monotonic_ns": env.recv_monotonic_ns,
+        "capture_seq": env.capture_seq,
+        "condition_id": str(pick(p, "condition_id", "conditionId") or "") or None,
+        "slug": str(pick(p, "slug") or "") or None,
+        "event_slug": str(pick(p, "event_slug", "eventSlug") or "") or None,
+        "title": str(pick(p, "title") or "") or None,
+        "outcome": str(pick(p, "outcome") or "") or None,
+        "side": str(pick(p, "side") or "") or None,
+        "price": as_float(pick(p, "price")),
+        "size": as_float(pick(p, "size", "amount")),
+        "asset": str(pick(p, "asset") or "") or None,
+        "proxy_wallet": str(pick(p, "proxy_wallet", "proxyWallet") or "") or None,
+        "tx_hash": str(pick(p, "tx_hash", "txHash", "transactionHash") or "") or None,
+        "trade_id": str(pick(p, "trade_id", "tradeId", "id") or "") or None,
+        "source_quality": str(pick(p, "source_quality") or "data_api_poll"),
+        "raw_json": as_json_text(pick(p, "raw_json")) or as_json_text(p) or "{}",
+    }
+
+
+def normalize_xuan_activity(env: RawEnvelope) -> Optional[Dict[str, Any]]:
+    p = env.payload_json
+    user = str(pick(p, "user") or "").strip()
+    if not user:
+        return None
+
+    return {
+        "user": user,
+        "poll_ts_ms": as_int(pick(p, "poll_ts_ms", "pollTsMs")) or env.recv_unix_ms,
+        "activity_ts_ms": as_int(pick(p, "activity_ts_ms", "activityTsMs", "timestamp", "time")),
+        "recv_ms": env.recv_unix_ms,
+        "recv_monotonic_ns": env.recv_monotonic_ns,
+        "capture_seq": env.capture_seq,
+        "condition_id": str(pick(p, "condition_id", "conditionId") or "") or None,
+        "slug": str(pick(p, "slug") or "") or None,
+        "event_slug": str(pick(p, "event_slug", "eventSlug") or "") or None,
+        "title": str(pick(p, "title") or "") or None,
+        "activity_type": str(pick(p, "activity_type", "type") or "") or None,
+        "outcome": str(pick(p, "outcome") or "") or None,
+        "side": str(pick(p, "side") or "") or None,
+        "price": as_float(pick(p, "price")),
+        "size": as_float(pick(p, "size", "amount")),
+        "usdc_size": as_float(pick(p, "usdc_size", "usdcSize")),
+        "asset": str(pick(p, "asset") or "") or None,
+        "proxy_wallet": str(pick(p, "proxy_wallet", "proxyWallet") or "") or None,
+        "tx_hash": str(pick(p, "tx_hash", "txHash", "transactionHash") or "") or None,
+        "source_quality": str(pick(p, "source_quality") or "data_api_poll"),
+        "raw_json": as_json_text(pick(p, "raw_json")) or as_json_text(p) or "{}",
+    }
+
+
+def normalize_xuan_poll_log(env: RawEnvelope) -> Optional[Dict[str, Any]]:
+    p = env.payload_json
+    user = str(pick(p, "user") or "").strip()
+    endpoint = str(pick(p, "endpoint") or "").strip()
+    if not user or not endpoint:
+        return None
+    return {
+        "user": user,
+        "endpoint": endpoint,
+        "poll_ts_ms": as_int(pick(p, "poll_ts_ms", "pollTsMs")) or env.recv_unix_ms,
+        "recv_ms": env.recv_unix_ms,
+        "recv_monotonic_ns": env.recv_monotonic_ns,
+        "capture_seq": env.capture_seq,
+        "rows": max(0, int(as_int(pick(p, "rows")) or 0)),
+        "max_ts_ms": as_int(pick(p, "max_ts_ms", "maxTsMs")),
+        "ok": 1 if bool(pick(p, "ok")) else 0,
+        "error": str(pick(p, "error") or "") or None,
     }
 
 

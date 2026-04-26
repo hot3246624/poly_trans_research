@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.polytrans.sidecar</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>/ABS/PATH/poly_trans_research/cfdata.py</string>
+    <string>--log-level</string>
+    <string>INFO</string>
+    <string>capture-sidecar-env</string>
+    <string>--env-file</string>
+    <string>/ABS/PATH/poly_trans_research/config/research.env</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/ABS/PATH/poly_trans_research</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/ABS/PATH/poly_trans_research/data/logs/sidecar.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABS/PATH/poly_trans_research/data/logs/sidecar.stderr.log</string>
+</dict>
+</plist>

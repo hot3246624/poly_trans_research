@@ -9,6 +9,7 @@ __pycache__/
 # Replay pipeline outputs
 data/raw/**
 data/replay/**
+data/logs/**
 !data/raw/.gitkeep
 !data/replay/.gitkeep
 

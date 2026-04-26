@@ -123,6 +123,7 @@ class SidecarNormalizationTests(unittest.TestCase):
             "timestamp": "1700000002000",
             "price": "0.41",
             "size": "3.5",
+            "side": "BUY",
             "transaction_hash": "0xabc",
         }
         trows = normalize_market_ws_message(
@@ -137,6 +138,7 @@ class SidecarNormalizationTests(unittest.TestCase):
         self.assertEqual(tchannel, "last_trade_price")
         self.assertEqual(tcond, "cond1")
         self.assertEqual(tpayload["market_side"], "YES")
+        self.assertEqual(tpayload["taker_side"], "BUY")
         self.assertEqual(tpayload["trade_id"], "0xabc")
         self.assertEqual(tpayload["price"], 0.41)
         self.assertEqual(tpayload["size"], 3.5)
