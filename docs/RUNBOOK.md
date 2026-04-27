@@ -183,6 +183,25 @@ tail -f /Users/hot/web3Scientist/poly_trans_research/data/logs/rebuild_3d_*.log
 真值侧额外建议关注：
 
 - 是否出现 `auth_error`
+
+## 4. 定时健康检查
+
+服务器侧推荐使用：
+
+- `scripts/ops/server_healthcheck.sh`
+
+检查项：
+
+- sidecar `pid file` 是否存活
+- 当天 `data/raw/YYYY-MM-DD/market_ws/book.jsonl.gz` 是否在新鲜时间窗内持续更新
+- rebuild loop `pid file` 与日志更新时间
+- `data/raw + data/replay` 总体积与磁盘剩余空间
+
+默认做法：
+
+- 仅在服务器上用 cron 调用该脚本
+- 脚本会在发现 sidecar / rebuild 缺失或卡死时自恢复
+- `public-only` 全市场运行时，`UV` 路径应显式写成 `/home/ubuntu/.local/bin/uv`
 - 是否出现 `inventory_truth_degraded`
 - 是否持续有 `own_order_events / own_fill_events / own_inventory_events`
 
