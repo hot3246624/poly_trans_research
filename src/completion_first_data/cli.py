@@ -19,6 +19,7 @@ from .capture.websocket_sidecar import (
     MetaPollConfig,
     SettlementPollConfig,
     SidecarConfig,
+    UserWsConfig,
     WsSourceConfig,
     load_sidecar_config,
     run_sidecar,
@@ -27,6 +28,7 @@ from .capture.xuan_poller import XuanPollConfig
 from .quality.startup_audit import save_startup_audit_report, run_startup_audit
 from .quality.validator import save_report, validate_replay_db
 from .replay.builder import build_replay_for_day
+from .user_truth import resolve_user_auth_config
 
 LOG = logging.getLogger("completion_first_data")
 
@@ -66,6 +68,19 @@ def _load_env_file(path: Path) -> dict[str, str]:
         if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
             value = value[1:-1]
         env[key] = value
+    return env
+
+
+def _load_env_stack(primary: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    candidates = [Path(".env"), primary.parent / ".env", primary]
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        env.update(_load_env_file(path))
     return env
 
 
@@ -185,6 +200,7 @@ def cmd_init_layout(args: argparse.Namespace) -> int:
                     "CF_RAW_ROOT=data/raw",
                     "CF_REPLAY_ROOT=data/replay",
                     "CF_USER_WS_ENABLED=false",
+                    "CF_DISABLE_USER_WS=true",
                     "CF_XUAN_POLL_ENABLED=false",
                     "# CF_XUAN_USER=0x...",
                     "CF_XUAN_POLL_SEC=300",
@@ -194,7 +210,9 @@ def cmd_init_layout(args: argparse.Namespace) -> int:
                     "CF_XUAN_POLL_MAX_PAGES=30",
                     "# CF_XUAN_CURSOR_PATH=data/raw/.xuan_cursor.json",
                     "POLYMARKET_WS_BASE_URL=wss://ws-subscriptions-clob.polymarket.com/ws",
+                    "# Secrets should live in config/.env or .env, never in tracked files.",
                     "# POLYMARKET_FUNDER_ADDRESS=",
+                    "# CF_L1_PRIVATE_KEY=",
                     "# CF_API_KEY=",
                     "# CF_API_SECRET=",
                     "# CF_API_PASSPHRASE=",
@@ -271,14 +289,16 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
     if not env_path.exists():
         raise SystemExit(f"env file not found: {env_path}")
 
-    env = _load_env_file(env_path)
+    env = _load_env_stack(env_path)
     ws_base = env.get("POLYMARKET_WS_BASE_URL", "wss://ws-subscriptions-clob.polymarket.com/ws")
-    user_addr = env.get("POLYMARKET_FUNDER_ADDRESS", "")
+    clob_rest_url = env.get("CF_CLOB_REST_URL", env.get("POLYMARKET_CLOB_BASE_URL", "https://clob.polymarket.com"))
     prefixes = _parse_csv_env(env, "CF_MARKET_PREFIXES", "btc-updown-5m")
     channels = _parse_csv_env(env, "CF_MARKET_CHANNELS", "book,last_trade_price")
     env_max_markets = max(0, _parse_int_env(env, "CF_MAX_MARKETS_PER_PREFIX", 1))
     env_disable_user_ws = _parse_bool_env(env, "CF_DISABLE_USER_WS", True)
     env_user_ws_enabled = _parse_bool_env(env, "CF_USER_WS_ENABLED", not env_disable_user_ws)
+    env_user_reconcile_sec = max(1, _parse_int_env(env, "CF_USER_RECONCILE_SEC", 60))
+    env_user_recovery_lookback_sec = max(30, _parse_int_env(env, "CF_USER_RECOVERY_LOOKBACK_SEC", 300))
     env_meta_active_only = _parse_bool_env(env, "CF_META_ACTIVE_ONLY", True)
     env_meta_interval_sec = max(1, _parse_int_env(env, "CF_META_INTERVAL_SEC", 20))
     env_meta_switch_delay_sec = max(0, _parse_int_env(env, "CF_META_SWITCH_DELAY_SEC", 8))
@@ -316,17 +336,27 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
         reconnect_sec=3.0,
     )
 
-    user_ws = WsSourceConfig(
-        name="user_ws",
-        url=_ws_url(ws_base, "user"),
-        enabled=(not args.disable_user_ws) and env_user_ws_enabled and bool(user_addr),
-        subscribe=[
-            {"type": "subscribe", "channel": "order", "user": user_addr},
-            {"type": "subscribe", "channel": "trade", "user": user_addr},
-        ],
-        default_channel="order",
-        reconnect_sec=3.0,
-    )
+    user_ws: Optional[UserWsConfig] = None
+    user_auth = None
+    user_requested = (not args.disable_user_ws) and env_user_ws_enabled
+    if user_requested:
+        user_auth = resolve_user_auth_config(env, clob_rest_url=clob_rest_url)
+        if user_auth and user_auth.funder_address:
+            user_ws = UserWsConfig(
+                name="user_ws",
+                url=_ws_url(ws_base, "user"),
+                auth=user_auth,
+                enabled=True,
+                reconnect_sec=3.0,
+                heartbeat_sec=10,
+                reconcile_sec=env_user_reconcile_sec,
+                recovery_lookback_sec=env_user_recovery_lookback_sec,
+                rest_url=clob_rest_url,
+            )
+        elif user_requested:
+            LOG.warning(
+                "user truth requested but auth is incomplete or user address missing; continuing in public-only mode"
+            )
 
     cfg = SidecarConfig(
         raw_root=args.raw_root or env_raw_root,
@@ -387,7 +417,7 @@ def cmd_capture_sidecar_env(args: argparse.Namespace) -> int:
         ",".join(prefixes),
         ",".join(channels),
         max(0, max_markets_per_prefix),
-        "enabled" if user_ws.enabled else "disabled",
+        "enabled" if user_ws and user_ws.enabled else "disabled",
         str(cfg.meta_poll.active_only).lower(),
         "on" if not args.disable_meta_conditional_get else "off",
         "enabled" if cfg.settlement_poll and cfg.settlement_poll.enabled else "disabled",
@@ -452,6 +482,7 @@ def cmd_audit_startup(args: argparse.Namespace) -> int:
 
     report = run_startup_audit(
         db,
+        require_user_truth=args.require_user_truth,
         taker_side_null_max_ratio=args.taker_side_null_max_ratio,
         min_market_meta_rounds=args.min_market_meta_rounds,
         min_settlement_rows=args.min_settlement_rows,
@@ -573,6 +604,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--day", help="UTC day YYYY-MM-DD")
     p.add_argument("--db-path", help="Override explicit sqlite path")
     p.add_argument("--output", help="Save report json path")
+    p.add_argument("--require-user-truth", action="store_true")
     p.add_argument("--taker-side-null-max-ratio", type=float, default=0.05)
     p.add_argument("--min-market-meta-rounds", type=int, default=12)
     p.add_argument("--min-settlement-rows", type=int, default=1)

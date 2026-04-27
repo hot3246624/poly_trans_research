@@ -12,6 +12,7 @@ from typing import Dict
 @dataclasses.dataclass(slots=True)
 class StartupAuditReport:
     replay_db: str
+    user_truth_required: bool
     md_trades_rows: int
     taker_side_null_rows: int
     taker_side_null_ratio: float
@@ -27,12 +28,23 @@ class StartupAuditReport:
     xuan_activity_poll_points: int
     xuan_trades_rows: int
     xuan_activity_rows: int
+    own_order_rows: int
+    own_fill_rows: int
+    inventory_bootstrap_rows: int
+    inventory_reconcile_rows: int
+    user_ws_auth_success: bool
+    inventory_truth_degraded_events: int
     pass_taker_side: bool
     pass_book_sizes: bool
     pass_trade_latency: bool
     pass_round_count: bool
     pass_settlement: bool
     pass_xuan_poll_points: bool
+    pass_user_ws_auth: bool
+    pass_own_order_rows: bool
+    pass_own_fill_rows: bool
+    pass_inventory_bootstrap: bool
+    pass_inventory_drift: bool
     all_passed: bool
 
     def as_dict(self) -> Dict[str, object]:
@@ -50,6 +62,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def run_startup_audit(
     db_path: Path,
     *,
+    require_user_truth: bool = False,
     taker_side_null_max_ratio: float = 0.05,
     min_market_meta_rounds: int = 12,
     min_settlement_rows: int = 1,
@@ -92,6 +105,32 @@ def run_startup_audit(
 
     xuan_trades_rows = int(cur.execute("SELECT COUNT(*) FROM xuan_trades").fetchone()[0]) if _table_exists(conn, "xuan_trades") else 0
     xuan_activity_rows = int(cur.execute("SELECT COUNT(*) FROM xuan_activity").fetchone()[0]) if _table_exists(conn, "xuan_activity") else 0
+    own_order_rows = int(cur.execute("SELECT COUNT(*) FROM own_order_events").fetchone()[0]) if _table_exists(conn, "own_order_events") else 0
+    own_fill_rows = int(cur.execute("SELECT COUNT(*) FROM own_fill_events").fetchone()[0]) if _table_exists(conn, "own_fill_events") else 0
+    inventory_bootstrap_rows = (
+        int(cur.execute("SELECT COUNT(*) FROM own_inventory_events WHERE source_kind='bootstrap'").fetchone()[0])
+        if _table_exists(conn, "own_inventory_events")
+        else 0
+    )
+    inventory_reconcile_rows = (
+        int(cur.execute("SELECT COUNT(*) FROM own_inventory_events WHERE source_kind='reconcile'").fetchone()[0])
+        if _table_exists(conn, "own_inventory_events")
+        else 0
+    )
+    user_ws_auth_success = (
+        int(cur.execute("SELECT COUNT(*) FROM user_ws_log WHERE event_name='auth_success'").fetchone()[0]) > 0
+        if _table_exists(conn, "user_ws_log")
+        else False
+    )
+    inventory_truth_degraded_events = (
+        int(
+            cur.execute(
+                "SELECT COUNT(*) FROM user_ws_log WHERE event_name='inventory_truth_degraded'"
+            ).fetchone()[0]
+        )
+        if _table_exists(conn, "user_ws_log")
+        else 0
+    )
 
     xuan_trades_poll_points = (
         int(cur.execute("SELECT COUNT(DISTINCT poll_ts_ms) FROM xuan_trades").fetchone()[0]) if xuan_trades_rows > 0 else 0
@@ -133,6 +172,11 @@ def run_startup_audit(
         xuan_trades_poll_points >= min_xuan_poll_points
         and xuan_activity_poll_points >= min_xuan_poll_points
     )
+    pass_user_ws_auth = (not require_user_truth) or user_ws_auth_success
+    pass_own_order_rows = (not require_user_truth) or (own_order_rows > 0)
+    pass_own_fill_rows = (not require_user_truth) or (own_fill_rows > 0)
+    pass_inventory_bootstrap = (not require_user_truth) or (inventory_bootstrap_rows > 0)
+    pass_inventory_drift = (not require_user_truth) or (inventory_truth_degraded_events == 0)
 
     all_passed = all(
         [
@@ -142,11 +186,17 @@ def run_startup_audit(
             pass_round_count,
             pass_settlement,
             pass_xuan_poll_points,
+            pass_user_ws_auth,
+            pass_own_order_rows,
+            pass_own_fill_rows,
+            pass_inventory_bootstrap,
+            pass_inventory_drift,
         ]
     )
 
     return StartupAuditReport(
         replay_db=str(db_path),
+        user_truth_required=require_user_truth,
         md_trades_rows=md_trades_rows,
         taker_side_null_rows=taker_side_null_rows,
         taker_side_null_ratio=round(taker_side_null_ratio, 6),
@@ -162,12 +212,23 @@ def run_startup_audit(
         xuan_activity_poll_points=xuan_activity_poll_points,
         xuan_trades_rows=xuan_trades_rows,
         xuan_activity_rows=xuan_activity_rows,
+        own_order_rows=own_order_rows,
+        own_fill_rows=own_fill_rows,
+        inventory_bootstrap_rows=inventory_bootstrap_rows,
+        inventory_reconcile_rows=inventory_reconcile_rows,
+        user_ws_auth_success=user_ws_auth_success,
+        inventory_truth_degraded_events=inventory_truth_degraded_events,
         pass_taker_side=pass_taker_side,
         pass_book_sizes=pass_book_sizes,
         pass_trade_latency=pass_trade_latency,
         pass_round_count=pass_round_count,
         pass_settlement=pass_settlement,
         pass_xuan_poll_points=pass_xuan_poll_points,
+        pass_user_ws_auth=pass_user_ws_auth,
+        pass_own_order_rows=pass_own_order_rows,
+        pass_own_fill_rows=pass_own_fill_rows,
+        pass_inventory_bootstrap=pass_inventory_bootstrap,
+        pass_inventory_drift=pass_inventory_drift,
         all_passed=all_passed,
     )
 

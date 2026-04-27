@@ -24,11 +24,36 @@ from .raw_store import RawCaptureStore
 from .xuan_poller import XuanPollConfig, run_xuan_poll_worker
 from ..constants import (
     CHANNEL_BOOK,
+    CHANNEL_INVENTORY_SNAPSHOT,
     CHANNEL_LAST_TRADE,
     CHANNEL_MARKET_RESOLVED,
+    CHANNEL_USER_ORDER,
+    CHANNEL_USER_TRADE,
+    CHANNEL_USER_WS_LOG,
     DEFAULT_META_POLL_SEC,
+    POLYMARKET_CLOB_BASE_URL,
     SOURCE_KIND_MARKET_WS,
     SOURCE_KIND_SETTLEMENT,
+    SOURCE_KIND_USER_WS,
+    SOURCE_KIND_INVENTORY,
+)
+from ..user_truth import (
+    InventorySnapshot,
+    UserAuthConfig,
+    activity_row_to_user_order_payload,
+    apply_fill_rows_to_inventory,
+    build_user_auth_message,
+    build_user_subscribe_message,
+    compute_inventory_drift,
+    extract_user_trade_rows,
+    fetch_open_orders,
+    fetch_positions,
+    fetch_recent_user_activity,
+    fetch_recent_user_trades,
+    mask_secret_id,
+    normalize_inventory_snapshot,
+    now_ms,
+    trade_row_to_user_trade_payload,
 )
 
 LOG = logging.getLogger(__name__)
@@ -45,6 +70,19 @@ class WsSourceConfig:
     subscribe: List[Dict[str, Any]] = field(default_factory=list)
     default_channel: str = "unknown"
     reconnect_sec: float = 3.0
+
+
+@dataclass(slots=True)
+class UserWsConfig:
+    name: str
+    url: str
+    auth: UserAuthConfig
+    enabled: bool = True
+    reconnect_sec: float = 3.0
+    heartbeat_sec: int = 10
+    reconcile_sec: int = 60
+    recovery_lookback_sec: int = 300
+    rest_url: str = POLYMARKET_CLOB_BASE_URL
 
 
 @dataclass(slots=True)
@@ -68,7 +106,7 @@ class SettlementPollConfig:
 class SidecarConfig:
     raw_root: str
     market_ws: Optional[WsSourceConfig] = None
-    user_ws: Optional[WsSourceConfig] = None
+    user_ws: Optional[UserWsConfig] = None
     meta_poll: Optional[MetaPollConfig] = None
     market_prefixes: List[str] = field(default_factory=list)
     market_channels: List[str] = field(default_factory=lambda: ["book", "last_trade_price"])
@@ -155,6 +193,14 @@ class BookAssembler:
             "no_ask_sz": self.no.ask_sz,
             "source_ts_ms": source_ts_ms,
         }
+
+
+@dataclass(slots=True)
+class InventoryTruthState:
+    snapshots: Dict[str, InventorySnapshot] = field(default_factory=dict)
+    touched_conditions: set[str] = field(default_factory=set)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    reconcile_now: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class MarketSelectionState:
@@ -263,7 +309,7 @@ def load_sidecar_config(path: str | Path, raw_root_override: Optional[str] = Non
     return SidecarConfig(
         raw_root=str(raw_root),
         market_ws=parse_ws("market_ws"),
-        user_ws=parse_ws("user_ws"),
+        user_ws=None,
         meta_poll=meta_poll,
         market_prefixes=list(cfg.get("market_prefixes") or []),
         market_channels=list(cfg.get("market_channels") or ["book", "last_trade_price"]),
@@ -511,6 +557,14 @@ def _event_type(msg: Dict[str, Any]) -> str:
     return str(msg.get("event_type") or msg.get("type") or msg.get("channel") or msg.get("event") or "").strip().lower()
 
 
+async def _wait_or_stop(stop_event: asyncio.Event, timeout_sec: float) -> bool:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=max(0.0, timeout_sec))
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
 def _allowed_market_events(channels: Sequence[str]) -> set[str]:
     clean = set(_normalized_market_channels(list(channels)))
     allowed: set[str] = set()
@@ -729,51 +783,511 @@ def normalize_market_ws_message(
     return []
 
 
-async def _consume_user_ws(raw_store: RawCaptureStore, cfg: WsSourceConfig, stop_event: asyncio.Event) -> None:
+def _write_user_log(
+    raw_store: RawCaptureStore,
+    *,
+    event_name: str,
+    event_value: Optional[str] = None,
+    detail: Optional[str] = None,
+    recv_unix_ms: Optional[int] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "event_name": event_name,
+    }
+    if event_value:
+        payload["event_value"] = event_value
+    if detail:
+        payload["detail"] = detail
+    raw_store.write(
+        source=SOURCE_KIND_USER_WS,
+        channel=CHANNEL_USER_WS_LOG,
+        payload_json=payload,
+        recv_unix_ms=recv_unix_ms,
+    )
+
+
+def _write_inventory_snapshots(
+    raw_store: RawCaptureStore,
+    snapshots: Sequence[InventorySnapshot],
+    *,
+    recv_unix_ms: int,
+) -> None:
+    for snapshot in snapshots:
+        raw_store.write(
+            source=SOURCE_KIND_INVENTORY,
+            channel=CHANNEL_INVENTORY_SNAPSHOT,
+            payload_json=snapshot.as_payload(),
+            condition_id=snapshot.condition_id,
+            recv_unix_ms=recv_unix_ms,
+        )
+
+
+def _normalize_position_snapshots(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    source_kind: str,
+    condition_filter: Optional[set[str]] = None,
+) -> List[InventorySnapshot]:
+    out: List[InventorySnapshot] = []
+    for row in rows:
+        snap = normalize_inventory_snapshot(row, source_kind=source_kind)
+        if snap is None:
+            continue
+        if condition_filter and snap.condition_id not in condition_filter:
+            continue
+        out.append(snap)
+    return out
+
+
+def _materialize_reconcile_snapshots(
+    current_state: Dict[str, InventorySnapshot],
+    fetched: Sequence[InventorySnapshot],
+    *,
+    condition_ids: Sequence[str],
+) -> List[InventorySnapshot]:
+    wanted = {str(v or "").strip() for v in condition_ids if str(v or "").strip()}
+    if not wanted:
+        return list(fetched)
+
+    by_asset: Dict[str, InventorySnapshot] = {
+        snap.asset_id: snap for snap in fetched if snap.condition_id in wanted
+    }
+    for asset_id, current in current_state.items():
+        if current.condition_id not in wanted or asset_id in by_asset:
+            continue
+        by_asset[asset_id] = InventorySnapshot(
+            condition_id=current.condition_id,
+            asset_id=current.asset_id,
+            outcome=current.outcome,
+            size=0.0,
+            avg_price=None,
+            redeemable=0,
+            mergeable=current.mergeable,
+            source_kind="reconcile",
+        )
+    return list(by_asset.values())
+
+
+def _open_order_to_payload(row: Dict[str, Any], *, funder_address: str) -> Dict[str, Any]:
+    ts_ms = _parse_ts_ms(row.get("timestamp")) or now_ms()
+    return {
+        "event_type": "order",
+        "type": str(row.get("type") or "UPDATE"),
+        "market": row.get("market"),
+        "asset_id": row.get("asset_id") or row.get("assetId") or row.get("asset"),
+        "side": row.get("side"),
+        "original_size": row.get("original_size") or row.get("originalSize") or row.get("size"),
+        "size_matched": row.get("size_matched") or row.get("sizeMatched") or row.get("filled_size"),
+        "price": row.get("price"),
+        "outcome": row.get("outcome"),
+        "status": row.get("status") or "LIVE",
+        "timestamp": ts_ms,
+        "created_at": _parse_ts_ms(row.get("created_at") or row.get("createdAt")) or ts_ms,
+        "maker_address": row.get("maker_address") or row.get("makerAddress"),
+        "transaction_hash": row.get("transaction_hash") or row.get("tx_hash") or row.get("txHash"),
+        "id": row.get("id") or row.get("order_id") or row.get("orderId"),
+        "owner": row.get("owner") or funder_address,
+        "order_owner": row.get("order_owner") or row.get("owner") or funder_address,
+        "source_quality": "recovery_open_orders",
+        "capture_funder_address": funder_address,
+        "raw_json": row,
+    }
+
+
+async def _run_inventory_bootstrap(
+    raw_store: RawCaptureStore,
+    inventory_state: InventoryTruthState,
+    session: requests.Session,
+    *,
+    user_address: str,
+) -> None:
+    if not user_address:
+        return
+    rows = await asyncio.to_thread(fetch_positions, session, user=user_address)
+    snapshots = _normalize_position_snapshots(rows, source_kind="bootstrap")
+    recv_ms = now_ms()
+    async with inventory_state.lock:
+        inventory_state.snapshots = {snap.asset_id: snap for snap in snapshots}
+        inventory_state.touched_conditions.update(snap.condition_id for snap in snapshots)
+    _write_inventory_snapshots(raw_store, snapshots, recv_unix_ms=recv_ms)
+
+
+async def _run_inventory_reconcile(
+    raw_store: RawCaptureStore,
+    inventory_state: InventoryTruthState,
+    session: requests.Session,
+    *,
+    user_address: str,
+    condition_ids: Sequence[str],
+) -> None:
+    if not user_address:
+        return
+    rows = await asyncio.to_thread(fetch_positions, session, user=user_address)
+    fetched = _normalize_position_snapshots(rows, source_kind="reconcile")
+    recv_ms = now_ms()
+
+    async with inventory_state.lock:
+        reconcile_rows = _materialize_reconcile_snapshots(
+            inventory_state.snapshots,
+            fetched,
+            condition_ids=condition_ids,
+        )
+        drifts = compute_inventory_drift(
+            inventory_state.snapshots,
+            reconcile_rows,
+            condition_ids=condition_ids,
+        )
+        for snapshot in reconcile_rows:
+            inventory_state.snapshots[snapshot.asset_id] = snapshot
+            inventory_state.touched_conditions.add(snapshot.condition_id)
+
+    _write_inventory_snapshots(raw_store, reconcile_rows, recv_unix_ms=recv_ms)
+    if drifts:
+        _write_user_log(
+            raw_store,
+            event_name="inventory_truth_degraded",
+            detail=json.dumps(drifts[:20], ensure_ascii=False),
+            recv_unix_ms=recv_ms,
+        )
+
+
+async def _inventory_reconcile_loop(
+    raw_store: RawCaptureStore,
+    cfg: UserWsConfig,
+    inventory_state: InventoryTruthState,
+    session: requests.Session,
+    stop_event: asyncio.Event,
+    *,
+    selection_state: MarketSelectionState,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(inventory_state.reconcile_now.wait(), timeout=max(1, cfg.reconcile_sec))
+            inventory_state.reconcile_now.clear()
+        except asyncio.TimeoutError:
+            pass
+        if stop_event.is_set():
+            break
+
+        async with inventory_state.lock:
+            condition_ids = sorted(inventory_state.touched_conditions)
+        if not condition_ids:
+            snap = selection_state.snapshot()
+            condition_ids = list(snap.selected_condition_ids)
+        if not condition_ids:
+            continue
+
+        try:
+            await _run_inventory_reconcile(
+                raw_store,
+                inventory_state,
+                session,
+                user_address=cfg.auth.funder_address,
+                condition_ids=condition_ids,
+            )
+        except Exception as exc:
+            LOG.warning("inventory reconcile failed: %s", exc)
+
+
+async def _run_user_recovery(
+    raw_store: RawCaptureStore,
+    cfg: UserWsConfig,
+    session: requests.Session,
+    *,
+    selection_state: MarketSelectionState,
+    inventory_state: InventoryTruthState,
+) -> None:
+    recv_ms = now_ms()
+    since_ms = recv_ms - (max(1, cfg.recovery_lookback_sec) * 1000)
+    selection = selection_state.snapshot()
+    selected_markets = selection.selected_condition_ids
+
+    try:
+        for row in await asyncio.to_thread(fetch_open_orders, cfg.auth, selected_markets):
+            payload = _open_order_to_payload(row, funder_address=cfg.auth.funder_address)
+            raw_store.write(
+                source=SOURCE_KIND_USER_WS,
+                channel=CHANNEL_USER_ORDER,
+                payload_json=payload,
+                condition_id=str(payload.get("market") or ""),
+                recv_unix_ms=recv_ms,
+            )
+    except Exception as exc:
+        LOG.warning("user recovery open-orders failed: %s", exc)
+
+    try:
+        trades = await asyncio.to_thread(
+            fetch_recent_user_trades,
+            session,
+            user=cfg.auth.funder_address,
+            since_ms=since_ms,
+        )
+        for row in trades:
+            payload = trade_row_to_user_trade_payload(row)
+            if not payload:
+                continue
+            payload["capture_funder_address"] = cfg.auth.funder_address
+            raw_store.write(
+                source=SOURCE_KIND_USER_WS,
+                channel=CHANNEL_USER_TRADE,
+                payload_json=payload,
+                condition_id=str(payload.get("market") or ""),
+                recv_unix_ms=recv_ms,
+            )
+    except Exception as exc:
+        LOG.warning("user recovery trades failed: %s", exc)
+
+    try:
+        activity = await asyncio.to_thread(
+            fetch_recent_user_activity,
+            session,
+            user=cfg.auth.funder_address,
+            since_ms=since_ms,
+        )
+        for row in activity:
+            payload = activity_row_to_user_order_payload(row)
+            if not payload:
+                continue
+            payload["capture_funder_address"] = cfg.auth.funder_address
+            raw_store.write(
+                source=SOURCE_KIND_USER_WS,
+                channel=CHANNEL_USER_ORDER,
+                payload_json=payload,
+                condition_id=str(payload.get("market") or ""),
+                recv_unix_ms=recv_ms,
+            )
+    except Exception as exc:
+        LOG.warning("user recovery activity failed: %s", exc)
+
+    try:
+        condition_ids = selected_markets
+        if not condition_ids:
+            async with inventory_state.lock:
+                condition_ids = sorted(inventory_state.touched_conditions)
+        await _run_inventory_reconcile(
+            raw_store,
+            inventory_state,
+            session,
+            user_address=cfg.auth.funder_address,
+            condition_ids=condition_ids,
+        )
+    except Exception as exc:
+        LOG.warning("user recovery reconcile failed: %s", exc)
+
+
+async def _send_user_heartbeat(ws: Any, stop_event: asyncio.Event, heartbeat_sec: int) -> None:
+    while not stop_event.is_set():
+        await asyncio.sleep(max(1, heartbeat_sec))
+        if stop_event.is_set():
+            return
+        await ws.send("{}")
+
+
+async def _consume_user_ws(
+    raw_store: RawCaptureStore,
+    cfg: UserWsConfig,
+    stop_event: asyncio.Event,
+    *,
+    selection_state: MarketSelectionState,
+) -> None:
     try:
         import websockets
     except ImportError as exc:
         raise RuntimeError("Missing dependency 'websockets'. Install it in requirements.txt") from exc
 
-    while not stop_event.is_set():
-        try:
-            async with websockets.connect(cfg.url, ping_interval=20, ping_timeout=20, max_size=None) as ws:
-                LOG.info("Connected: %s", cfg.name)
-                for sub_msg in cfg.subscribe:
-                    await ws.send(json.dumps(sub_msg, ensure_ascii=False))
+    session = requests.Session()
+    inventory_state = InventoryTruthState()
+    try:
+        await _run_inventory_bootstrap(
+            raw_store,
+            inventory_state,
+            session,
+            user_address=cfg.auth.funder_address,
+        )
+    except Exception as exc:
+        LOG.warning("inventory bootstrap failed: %s", exc)
 
-                while not stop_event.is_set():
-                    try:
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        continue
+    reconcile_task = asyncio.create_task(
+        _inventory_reconcile_loop(
+            raw_store,
+            cfg,
+            inventory_state,
+            session,
+            stop_event,
+            selection_state=selection_state,
+        ),
+        name="inventory_reconcile",
+    )
 
-                    if isinstance(raw_msg, bytes):
-                        raw_msg = raw_msg.decode("utf-8", errors="replace")
+    try:
+        while not stop_event.is_set():
+            selection = selection_state.snapshot()
+            if not selection.selected_condition_ids:
+                await asyncio.sleep(1.0)
+                continue
 
-                    try:
-                        parsed = json.loads(raw_msg)
-                    except json.JSONDecodeError:
-                        parsed = {"raw_text": raw_msg}
+            auth_logged = False
+            subscribed_revision = -1
+            recovery_task: Optional[asyncio.Task] = None
+            heartbeat_task: Optional[asyncio.Task] = None
 
-                    channel = str(
-                        parsed.get("channel")
-                        or parsed.get("event")
-                        or parsed.get("event_type")
-                        or cfg.default_channel
+            try:
+                async with websockets.connect(cfg.url, ping_interval=None, ping_timeout=None, max_size=None) as ws:
+                    LOG.info(
+                        "Connected: %s (auth=%s, api_key=%s)",
+                        cfg.name,
+                        cfg.auth.auth_source,
+                        mask_secret_id(cfg.auth.api_key),
                     )
-                    payload = parsed.get("data")
-                    payload_json = payload if isinstance(payload, dict) else dict(parsed)
-                    condition_id = pick_condition_id(payload_json)
-                    raw_store.write(
-                        source=cfg.name,
-                        channel=channel,
-                        payload_json=payload_json,
-                        condition_id=condition_id,
+                    await ws.send(json.dumps(build_user_auth_message(cfg.auth), ensure_ascii=False))
+                    heartbeat_task = asyncio.create_task(
+                        _send_user_heartbeat(ws, stop_event, cfg.heartbeat_sec),
+                        name="user_ws_heartbeat",
                     )
-        except Exception:
-            LOG.exception("WS %s disconnected; reconnect in %.1fs", cfg.name, cfg.reconnect_sec)
-            await asyncio.sleep(cfg.reconnect_sec)
+
+                    while not stop_event.is_set():
+                        latest = selection_state.snapshot()
+                        if latest.revision != subscribed_revision:
+                            await ws.send(
+                                json.dumps(
+                                    build_user_subscribe_message(latest.selected_condition_ids),
+                                    ensure_ascii=False,
+                                )
+                            )
+                            subscribed_revision = latest.revision
+                            LOG.info(
+                                "updated user subscription: revision=%d markets=%d",
+                                latest.revision,
+                                len(latest.selected_condition_ids),
+                            )
+
+                        try:
+                            raw_msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            if not auth_logged and subscribed_revision >= 0:
+                                auth_logged = True
+                                _write_user_log(
+                                    raw_store,
+                                    event_name="auth_success",
+                                    event_value=cfg.auth.auth_source,
+                                )
+                                recovery_task = asyncio.create_task(
+                                    _run_user_recovery(
+                                        raw_store,
+                                        cfg,
+                                        session,
+                                        selection_state=selection_state,
+                                        inventory_state=inventory_state,
+                                    ),
+                                    name="user_ws_recovery",
+                                )
+                            continue
+
+                        if isinstance(raw_msg, bytes):
+                            raw_msg = raw_msg.decode("utf-8", errors="replace")
+
+                        if str(raw_msg).strip() in {"", "{}"}:
+                            if not auth_logged:
+                                auth_logged = True
+                                _write_user_log(
+                                    raw_store,
+                                    event_name="auth_success",
+                                    event_value=cfg.auth.auth_source,
+                                )
+                                recovery_task = asyncio.create_task(
+                                    _run_user_recovery(
+                                        raw_store,
+                                        cfg,
+                                        session,
+                                        selection_state=selection_state,
+                                        inventory_state=inventory_state,
+                                    ),
+                                    name="user_ws_recovery",
+                                )
+                            continue
+
+                        try:
+                            parsed = json.loads(raw_msg)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if isinstance(parsed, dict) and parsed.get("error"):
+                            _write_user_log(
+                                raw_store,
+                                event_name="auth_error",
+                                detail=str(parsed.get("error")),
+                            )
+                            continue
+
+                        for item in _iter_ws_objects(parsed):
+                            if not auth_logged:
+                                auth_logged = True
+                                _write_user_log(
+                                    raw_store,
+                                    event_name="auth_success",
+                                    event_value=cfg.auth.auth_source,
+                                )
+                                recovery_task = asyncio.create_task(
+                                    _run_user_recovery(
+                                        raw_store,
+                                        cfg,
+                                        session,
+                                        selection_state=selection_state,
+                                        inventory_state=inventory_state,
+                                    ),
+                                    name="user_ws_recovery",
+                                )
+
+                            item["capture_funder_address"] = cfg.auth.funder_address
+                            evt = _event_type(item)
+                            if evt == "order":
+                                raw_store.write(
+                                    source=SOURCE_KIND_USER_WS,
+                                    channel=CHANNEL_USER_ORDER,
+                                    payload_json=item,
+                                    condition_id=pick_condition_id(item),
+                                )
+                                continue
+
+                            if evt != "trade":
+                                continue
+
+                            raw_store.write(
+                                source=SOURCE_KIND_USER_WS,
+                                channel=CHANNEL_USER_TRADE,
+                                payload_json=item,
+                                condition_id=pick_condition_id(item),
+                            )
+
+                            fill_rows = extract_user_trade_rows(
+                                item,
+                                funder_address=cfg.auth.funder_address,
+                            )
+                            if not fill_rows:
+                                continue
+
+                            async with inventory_state.lock:
+                                derived = apply_fill_rows_to_inventory(inventory_state.snapshots, fill_rows)
+                                inventory_state.touched_conditions.update(
+                                    row["condition_id"] for row in fill_rows if row.get("condition_id")
+                                )
+                            if derived:
+                                _write_inventory_snapshots(raw_store, derived, recv_unix_ms=now_ms())
+                                inventory_state.reconcile_now.set()
+            except Exception:
+                LOG.exception("WS %s disconnected; reconnect in %.1fs", cfg.name, cfg.reconnect_sec)
+                if await _wait_or_stop(stop_event, cfg.reconnect_sec):
+                    break
+            finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)
+                if recovery_task is not None:
+                    await asyncio.gather(recovery_task, return_exceptions=True)
+    finally:
+        reconcile_task.cancel()
+        await asyncio.gather(reconcile_task, return_exceptions=True)
+        session.close()
 
 
 async def _consume_market_ws(
@@ -851,7 +1365,8 @@ async def _consume_market_ws(
                             )
         except Exception:
             LOG.exception("WS %s disconnected; reconnect in %.1fs", cfg.name, cfg.reconnect_sec)
-            await asyncio.sleep(cfg.reconnect_sec)
+            if await _wait_or_stop(stop_event, cfg.reconnect_sec):
+                break
 
 
 async def _meta_poller(
@@ -889,7 +1404,11 @@ async def _meta_poller(
             pending_apply_at_ms = None
 
         try:
-            markets = fetch_crypto_5m_markets(active_only=cfg.active_only, fetch_state=fetch_state)
+            markets = await asyncio.to_thread(
+                fetch_crypto_5m_markets,
+                active_only=cfg.active_only,
+                fetch_state=fetch_state,
+            )
             if fetch_state is not None and fetch_state.last_poll_not_modified:
                 LOG.info("meta poll not modified (HTTP 304)")
             else:
@@ -913,7 +1432,8 @@ async def _meta_poller(
                             snap.revision,
                             len(snap.asset_ids),
                         )
-                        await asyncio.sleep(max(1, cfg.interval_sec))
+                        if await _wait_or_stop(stop_event, max(1, cfg.interval_sec)):
+                            return
                         continue
 
                 written = write_market_meta_records(raw_store, tracked)
@@ -939,7 +1459,8 @@ async def _meta_poller(
         except Exception:
             LOG.exception("meta poll failed")
 
-        await asyncio.sleep(max(1, cfg.interval_sec))
+        if await _wait_or_stop(stop_event, max(1, cfg.interval_sec)):
+            return
 
 
 async def _settlement_poller(
@@ -998,7 +1519,8 @@ async def _settlement_poller(
             resolved_conditions.add(cid)
             LOG.info("settlement captured: condition=%s outcome=%s", cid, record.get("official_outcome"))
 
-        await asyncio.sleep(max(1, int(cfg.interval_sec)))
+        if await _wait_or_stop(stop_event, max(1, int(cfg.interval_sec))):
+            return
 
 
 async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None) -> None:
@@ -1009,25 +1531,6 @@ async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None)
     selection_state = MarketSelectionState()
     market_channels = _normalized_market_channels(config.market_channels)
     allowed_market_events = _allowed_market_events(market_channels)
-
-    if config.market_ws and config.market_ws.enabled and config.market_prefixes:
-        try:
-            initial = fetch_crypto_5m_markets(active_only=True)
-            selected = select_markets_by_prefix(
-                initial,
-                config.market_prefixes,
-                max_markets_per_prefix=config.max_markets_per_prefix,
-            )
-            selection_state.update_from_markets(selected)
-            snap = selection_state.snapshot()
-            LOG.info(
-                "initial selected markets: conditions=%d assets=%d revision=%d",
-                len(snap.selected_condition_ids),
-                len(snap.asset_ids),
-                snap.revision,
-            )
-        except Exception:
-            LOG.exception("initial market selection failed; sidecar will retry via meta poll")
 
     if config.market_ws and config.market_ws.enabled and config.market_ws.url:
         tasks.append(
@@ -1045,7 +1548,17 @@ async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None)
         )
 
     if config.user_ws and config.user_ws.enabled and config.user_ws.url:
-        tasks.append(asyncio.create_task(_consume_user_ws(raw_store, config.user_ws, stop_event), name="user_ws"))
+        tasks.append(
+            asyncio.create_task(
+                _consume_user_ws(
+                    raw_store,
+                    config.user_ws,
+                    stop_event,
+                    selection_state=selection_state,
+                ),
+                name="user_ws",
+            )
+        )
 
     if config.meta_poll and config.meta_poll.enabled:
         tasks.append(
@@ -1099,4 +1612,6 @@ async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None)
             await asyncio.sleep(duration_sec)
     finally:
         stop_event.set()
+        for task in tasks:
+            task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

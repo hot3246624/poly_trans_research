@@ -11,27 +11,32 @@ from ..capture.envelope import RawEnvelope
 from ..constants import (
     CHANNEL_BOOK,
     CHANNEL_BBA,
+    CHANNEL_INVENTORY_SNAPSHOT,
     CHANNEL_XUAN_ACTIVITY,
     CHANNEL_XUAN_POLL_LOG,
     CHANNEL_XUAN_TRADES,
     CHANNEL_LAST_TRADE,
     CHANNEL_MARKET_META,
     CHANNEL_MARKET_RESOLVED,
-    CHANNEL_ORDER,
+    CHANNEL_USER_ORDER,
+    CHANNEL_USER_TRADE,
+    CHANNEL_USER_WS_LOG,
     CHANNEL_TRADES_BACKFILL,
-    CHANNEL_INVENTORY,
 )
 from ..utils.io import glob_jsonl_gz, iter_jsonl_gz
 from .normalize import (
     dedup_book_key,
+    dedup_fill_key,
     dedup_order_key,
     dedup_trade_key,
     normalize_book_row,
+    normalize_fill_events,
     normalize_inventory_event,
     normalize_market_meta_payload,
     normalize_md_trade,
     normalize_order_event,
     normalize_settlement,
+    normalize_user_ws_log,
     normalize_xuan_activity,
     normalize_xuan_poll_log,
     normalize_xuan_trade,
@@ -50,7 +55,9 @@ class BuildStats:
     xuan_activity_rows: int = 0
     xuan_poll_log_rows: int = 0
     own_order_rows: int = 0
+    own_fill_rows: int = 0
     own_inventory_rows: int = 0
+    user_ws_log_rows: int = 0
     settlement_rows: int = 0
     dedup_skips: int = 0
 
@@ -90,6 +97,8 @@ class ReplayBuilder:
         xuan_activity_seen: set = set()
         xuan_poll_seen: set = set()
         order_seen: set = set()
+        fill_seen: set = set()
+        user_ws_log_seen: set = set()
         settlement_seen: set = set()
 
         cur = conn.cursor()
@@ -159,39 +168,36 @@ class ReplayBuilder:
                 continue
 
             # inventory
-            if channel == CHANNEL_INVENTORY or source.startswith("inventory"):
+            if channel == CHANNEL_INVENTORY_SNAPSHOT:
                 rec = normalize_inventory_event(env)
                 if rec:
                     cur.execute(
                         """
                         INSERT INTO own_inventory_events (
-                            condition_id, recv_ms, recv_monotonic_ns, capture_seq,
-                            event_type, yes_pos, no_pos, yes_avg_cost, no_avg_cost,
-                            paired_qty, residual_qty, usdc_available, tx_hash
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            condition_id, asset_id, outcome, size, avg_price,
+                            redeemable, mergeable, source_kind,
+                            recv_ms, recv_monotonic_ns, capture_seq
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["condition_id"],
+                            rec["asset_id"],
+                            rec["outcome"],
+                            rec["size"],
+                            rec["avg_price"],
+                            rec["redeemable"],
+                            rec["mergeable"],
+                            rec["source_kind"],
                             rec["recv_ms"],
                             rec["recv_monotonic_ns"],
                             rec["capture_seq"],
-                            rec["event_type"],
-                            rec["yes_pos"],
-                            rec["no_pos"],
-                            rec["yes_avg_cost"],
-                            rec["no_avg_cost"],
-                            rec["paired_qty"],
-                            rec["residual_qty"],
-                            rec["usdc_available"],
-                            rec["tx_hash"],
                         ),
                     )
                     stats.own_inventory_rows += 1
                 continue
 
-            is_user_source = source.startswith("user")
             # own order stream
-            if is_user_source or channel == CHANNEL_ORDER:
+            if channel == CHANNEL_USER_ORDER:
                 rec = normalize_order_event(env)
                 if rec:
                     key = dedup_order_key(rec)
@@ -230,6 +236,73 @@ class ReplayBuilder:
                         ),
                     )
                     stats.own_order_rows += 1
+                continue
+
+            if channel == CHANNEL_USER_TRADE:
+                rows = normalize_fill_events(env)
+                for rec in rows:
+                    key = dedup_fill_key(rec)
+                    if key in fill_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    fill_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO own_fill_events (
+                            condition_id, asset_id, order_id, taker_order_id, trade_id,
+                            market_side, direction, trader_side, price, size, fee_rate_bps,
+                            match_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                            maker_address, tx_hash, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["condition_id"],
+                            rec["asset_id"],
+                            rec["order_id"],
+                            rec["taker_order_id"],
+                            rec["trade_id"],
+                            rec["market_side"],
+                            rec["direction"],
+                            rec["trader_side"],
+                            rec["price"],
+                            rec["size"],
+                            rec["fee_rate_bps"],
+                            rec["match_ts_ms"],
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["maker_address"],
+                            rec["tx_hash"],
+                            rec["raw_json"],
+                        ),
+                    )
+                    stats.own_fill_rows += 1
+                continue
+
+            if channel == CHANNEL_USER_WS_LOG:
+                rec = normalize_user_ws_log(env)
+                if rec:
+                    key = (rec["event_name"], rec["event_value"] or "", rec["recv_ms"])
+                    if key in user_ws_log_seen:
+                        stats.dedup_skips += 1
+                        continue
+                    user_ws_log_seen.add(key)
+                    cur.execute(
+                        """
+                        INSERT INTO user_ws_log (
+                            recv_ms, recv_monotonic_ns, capture_seq, event_name, event_value, detail
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec["recv_ms"],
+                            rec["recv_monotonic_ns"],
+                            rec["capture_seq"],
+                            rec["event_name"],
+                            rec["event_value"],
+                            rec["detail"],
+                        ),
+                    )
+                    stats.user_ws_log_rows += 1
                 continue
 
             # market trades (standardized contract only)

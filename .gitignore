@@ -31,6 +31,8 @@ report_path
 # Dedicated legacy tool outputs
 outputs/**
 # Local runtime config (may contain sensitive endpoints/accounts)
+.env
+*.env
 config/*.json
 config/*.env
 !config/*.example.json

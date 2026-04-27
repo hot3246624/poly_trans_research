@@ -145,21 +145,51 @@ CREATE TABLE IF NOT EXISTS own_order_events (
     round_id TEXT
 );
 
-CREATE TABLE IF NOT EXISTS own_inventory_events (
+CREATE TABLE IF NOT EXISTS own_fill_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     condition_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    order_id TEXT,
+    taker_order_id TEXT,
+    trade_id TEXT,
+    market_side TEXT,
+    direction TEXT,
+    trader_side TEXT,
+    price REAL,
+    size REAL,
+    fee_rate_bps REAL,
+    match_ts_ms INTEGER,
     recv_ms INTEGER NOT NULL,
     recv_monotonic_ns INTEGER NOT NULL,
     capture_seq INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    yes_pos REAL,
-    no_pos REAL,
-    yes_avg_cost REAL,
-    no_avg_cost REAL,
-    paired_qty REAL,
-    residual_qty REAL,
-    usdc_available REAL,
-    tx_hash TEXT
+    maker_address TEXT,
+    tx_hash TEXT,
+    raw_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS own_inventory_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    outcome TEXT,
+    size REAL,
+    avg_price REAL,
+    redeemable INTEGER,
+    mergeable INTEGER,
+    source_kind TEXT NOT NULL,
+    recv_ms INTEGER NOT NULL,
+    recv_monotonic_ns INTEGER NOT NULL,
+    capture_seq INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_ws_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recv_ms INTEGER NOT NULL,
+    recv_monotonic_ns INTEGER NOT NULL,
+    capture_seq INTEGER NOT NULL,
+    event_name TEXT NOT NULL,
+    event_value TEXT,
+    detail TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settlement_records (
@@ -177,7 +207,11 @@ CREATE INDEX IF NOT EXISTS idx_trades_cond_trade_ts ON md_trades(condition_id, t
 CREATE INDEX IF NOT EXISTS idx_trades_taker_side ON md_trades(taker_side);
 CREATE INDEX IF NOT EXISTS idx_order_cond_seq ON own_order_events(condition_id, capture_seq);
 CREATE INDEX IF NOT EXISTS idx_order_type ON own_order_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_fill_cond_seq ON own_fill_events(condition_id, capture_seq);
+CREATE INDEX IF NOT EXISTS idx_fill_trade_id ON own_fill_events(trade_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_cond_seq ON own_inventory_events(condition_id, capture_seq);
+CREATE INDEX IF NOT EXISTS idx_inventory_source_kind ON own_inventory_events(source_kind);
+CREATE INDEX IF NOT EXISTS idx_user_ws_log_event_name ON user_ws_log(event_name, recv_ms);
 CREATE INDEX IF NOT EXISTS idx_xuan_trades_poll_ts ON xuan_trades(poll_ts_ms);
 CREATE INDEX IF NOT EXISTS idx_xuan_trades_cond_ts ON xuan_trades(condition_id, trade_ts_ms);
 CREATE INDEX IF NOT EXISTS idx_xuan_activity_poll_ts ON xuan_activity(poll_ts_ms);
@@ -204,4 +238,5 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "md_trades", "taker_address TEXT")
     _ensure_column(conn, "md_trades", "raw_json TEXT")
     _ensure_column(conn, "md_book_l1", "raw_json TEXT")
+    _ensure_column(conn, "own_fill_events", "raw_json TEXT")
     conn.commit()

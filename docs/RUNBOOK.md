@@ -1,28 +1,67 @@
-# Runbook (Crypto 5m Public Capture)
+# Runbook
 
-本文档是第一阶段的实操手册：启动、监控、验收、停止。
+本文档覆盖两种运行模式：`public-only` 和 `public + user truth`。
 
 ## 0. 前置条件
 
-- 使用 `config/research.env`（不要把真实私钥写入仓库文件）。
-- 第一阶段默认不启用 `user_ws`，不需要钱包私钥/API 私钥。
-- 建议在项目根目录执行：`/Users/hot/web3Scientist/poly_trans_research`
-- 默认配置是 `BTC 5m`；如果要采所有 active crypto `5m`，把 `CF_MARKET_PREFIXES=*` 与 `CF_MAX_MARKETS_PER_PREFIX=0` 写入 `config/research.env`。
+- 工作目录：`/Users/hot/web3Scientist/poly_trans_research`
+- 运行参数放 `config/research.env`
+- 敏感项放 `config/.env` 或 `.env`
+- 不要把真实密钥写进 repo-tracked 文件
+
+### public-only
+
+```env
+CF_DISABLE_USER_WS=true
+CF_USER_WS_ENABLED=false
+```
+
+### public + user truth
+
+`config/research.env`：
+
+```env
+CF_DISABLE_USER_WS=false
+CF_USER_WS_ENABLED=true
+CF_USER_RECONCILE_SEC=60
+CF_USER_RECOVERY_LOOKBACK_SEC=300
+```
+
+`config/.env` 或 `.env`：
+
+```env
+POLYMARKET_FUNDER_ADDRESS=0x...
+CF_L1_PRIVATE_KEY=...
+CF_API_KEY=...
+CF_API_SECRET=...
+CF_API_PASSPHRASE=...
+```
 
 ## 1. 启动前 1h 门槛验证
+
+### public-only
 
 ```bash
 cd /Users/hot/web3Scientist/poly_trans_research
 bash scripts/ops/startup_validation_1h.sh config/research.env
 ```
 
-完成后查看：
+### public + user truth
 
 ```bash
-cat /Users/hot/web3Scientist/poly_trans_research/data/replay/$(date -u +%F)/startup_audit.json
+cd /Users/hot/web3Scientist/poly_trans_research
+uv run python cfdata.py --log-level INFO capture-sidecar-env \
+  --env-file config/research.env \
+  --duration-sec 3600
+DAY_UTC=$(date -u +%F)
+uv run python cfdata.py --log-level INFO build-replay --day "$DAY_UTC"
+uv run python cfdata.py --log-level INFO audit-startup \
+  --day "$DAY_UTC" \
+  --require-user-truth \
+  --output "data/replay/$DAY_UTC/startup_audit.json"
 ```
 
-目标：`all_passed=true`。
+验收目标：`startup_audit.json` 中 `all_passed=true`。
 
 ## 2. 连续 3 天运行（后台）
 
@@ -66,18 +105,37 @@ tail -f /Users/hot/web3Scientist/poly_trans_research/data/logs/sidecar_3d_*.log
 tail -f /Users/hot/web3Scientist/poly_trans_research/data/logs/rebuild_3d_*.log
 ```
 
+真值侧额外建议关注：
+
+- 是否出现 `auth_error`
+- 是否出现 `inventory_truth_degraded`
+- 是否持续有 `own_order_events / own_fill_events / own_inventory_events`
+
 ## 4. 每日验收（UTC）
+
+### public-only
 
 ```bash
 DAY_UTC=$(date -u +%F)
 uv run python cfdata.py --log-level INFO build-replay --day "$DAY_UTC"
 uv run python cfdata.py --log-level INFO validate-replay --day "$DAY_UTC"
+uv run python cfdata.py --log-level INFO audit-startup --day "$DAY_UTC"
+```
+
+### public + user truth
+
+```bash
+DAY_UTC=$(date -u +%F)
+uv run python cfdata.py --log-level INFO build-replay --day "$DAY_UTC"
+uv run python cfdata.py --log-level INFO validate-replay --day "$DAY_UTC"
+uv run python cfdata.py --log-level INFO audit-startup --day "$DAY_UTC" --require-user-truth
 ```
 
 关键产物：
 
 - `data/raw/YYYY-MM-DD/...`
 - `data/replay/YYYY-MM-DD/crypto_5m.sqlite`
+- `data/replay/YYYY-MM-DD/startup_audit.json`
 
 ## 5. 停止任务
 
@@ -86,8 +144,9 @@ pkill -f 'cfdata.py --log-level INFO capture-sidecar-env' || true
 pkill -f 'cfdata.py --log-level INFO build-replay-rolling' || true
 ```
 
-## 6. 第一阶段与第二阶段边界
+## 6. 边界
 
-- 第一阶段：只做 market/meta/xuan 的公开数据研究与回测，不需要 auth。
-- 第二阶段：如果要采执行真值（你自己的订单与成交回报），才需要启用 `user_ws` 与私钥/API 凭证。
-- 第二阶段不需要推倒重采第一阶段；但 user 通道历史无法补采。
+- `public-only` 不需要私钥/API 私钥。
+- `public + user truth` 新增的是我方执行真值，不是对手挂单真值。
+- user 通道历史无法事后补采；只能从开启时刻开始累积。
+- 第一阶段公开侧数据不需要因为第二阶段而推倒重采。

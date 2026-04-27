@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..capture.envelope import RawEnvelope
 from ..constants import ORDER_EVENT_TYPES
+from ..user_truth import extract_user_trade_rows
 
 
 def as_int(value: Any) -> Optional[int]:
@@ -40,6 +41,15 @@ def as_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def as_bool_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    txt = str(value or "").strip().lower()
+    if txt in {"", "0", "false", "no", "off", "none", "null"}:
+        return 0
+    return 1
 
 
 def first_non_none(*values: Optional[float]) -> Optional[float]:
@@ -104,6 +114,8 @@ def normalize_event_type(payload: Dict[str, Any], channel: str) -> str:
         "new": "placement",
         "cancel": "cancel_sent",
         "cancel_sent": "cancel_sent",
+        "cancellation": "canceled",
+        "cancelation": "canceled",
         "cancelled": "canceled",
         "canceled": "canceled",
         "rejected": "rejected",
@@ -248,6 +260,13 @@ def normalize_order_event(env: RawEnvelope) -> Optional[Dict[str, Any]]:
     if not condition_id:
         return None
 
+    original_size = as_float(pick(p, "original_size", "originalSize", "size", "amount"))
+    size_matched = as_float(pick(p, "size_matched", "sizeMatched", "matched_amount", "matchedAmount"))
+    remaining = as_float(pick(p, "remaining", "remaining_size", "size_remaining"))
+    if remaining is None and original_size is not None:
+        matched = size_matched or 0.0
+        remaining = max(0.0, original_size - matched)
+
     return {
         "condition_id": condition_id,
         "recv_ms": env.recv_unix_ms,
@@ -256,42 +275,97 @@ def normalize_order_event(env: RawEnvelope) -> Optional[Dict[str, Any]]:
         "client_order_id": str(pick(p, "client_order_id", "clientOrderId") or "") or None,
         "order_id": str(pick(p, "order_id", "orderId", "id") or "") or None,
         "event_type": normalize_event_type(p, env.channel),
-        "side": normalize_side(pick(p, "side", "market_side", "outcome")),
+        "side": normalize_side(pick(p, "outcome", "market_side", "side_label")),
         "direction": normalize_direction(pick(p, "direction", "order_side", "orderSide", "action", "side")),
         "price": as_float(pick(p, "price")),
-        "size": as_float(pick(p, "size", "amount")),
-        "remaining": as_float(pick(p, "remaining", "remaining_size", "size_remaining")),
+        "size": original_size,
+        "remaining": remaining,
         "status": str(pick(p, "status") or "") or None,
         "reason": str(pick(p, "reason", "message") or "") or None,
         "reject_kind": str(pick(p, "reject_kind", "rejectKind") or "") or None,
         "tx_hash": str(pick(p, "tx_hash", "txHash", "transactionHash", "tx") or "") or None,
         "strategy_tag": str(pick(p, "strategy_tag", "strategyTag") or "") or None,
         "round_id": str(pick(p, "round_id", "roundId") or "") or None,
+        "event_ts_ms": as_int(pick(p, "timestamp", "created_at", "createdAt", "last_update", "lastUpdate")),
     }
 
 
 def normalize_inventory_event(env: RawEnvelope) -> Optional[Dict[str, Any]]:
     p = env.payload_json
     condition_id = env.condition_id or str(pick(p, "condition_id", "conditionId") or "")
-    if not condition_id:
+    asset_id = str(pick(p, "asset_id", "assetId", "asset") or "")
+    if not condition_id or not asset_id:
         return None
 
-    event_type = str(pick(p, "event_type", "eventType", "type") or "inventory")
+    outcome = normalize_side(pick(p, "outcome", "market_side", "side"))
+    size = as_float(pick(p, "size", "amount"))
+    if outcome is None or size is None:
+        return None
 
     return {
         "condition_id": condition_id,
+        "asset_id": asset_id,
+        "outcome": outcome,
+        "size": size,
+        "avg_price": as_float(pick(p, "avg_price", "avgPrice", "average_price", "averagePrice")),
+        "redeemable": as_bool_int(pick(p, "redeemable")),
+        "mergeable": as_bool_int(pick(p, "mergeable")),
+        "source_kind": str(pick(p, "source_kind", "sourceKind") or "unknown"),
         "recv_ms": env.recv_unix_ms,
         "recv_monotonic_ns": env.recv_monotonic_ns,
         "capture_seq": env.capture_seq,
-        "event_type": event_type,
-        "yes_pos": as_float(pick(p, "yes_pos", "working_yes_qty", "yes_qty")),
-        "no_pos": as_float(pick(p, "no_pos", "working_no_qty", "no_qty")),
-        "yes_avg_cost": as_float(pick(p, "yes_avg_cost")),
-        "no_avg_cost": as_float(pick(p, "no_avg_cost")),
-        "paired_qty": as_float(pick(p, "paired_qty")),
-        "residual_qty": as_float(pick(p, "residual_qty")),
-        "usdc_available": as_float(pick(p, "usdc_available", "available_usdc")),
-        "tx_hash": str(pick(p, "tx_hash", "txHash", "transactionHash") or "") or None,
+    }
+
+
+def normalize_fill_events(env: RawEnvelope) -> list[Dict[str, Any]]:
+    p = env.payload_json
+    funder_address = str(pick(p, "capture_funder_address", "funder_address", "funderAddress") or "") or None
+    rows = extract_user_trade_rows(p, funder_address=funder_address)
+    out: list[Dict[str, Any]] = []
+    for row in rows:
+        if not row.get("condition_id") or not row.get("asset_id"):
+            continue
+        if row.get("price") is None or row.get("size") is None:
+            continue
+        out.append(
+            {
+                "condition_id": row["condition_id"],
+                "asset_id": row["asset_id"],
+                "order_id": row.get("order_id"),
+                "taker_order_id": row.get("taker_order_id"),
+                "trade_id": row.get("trade_id"),
+                "market_side": row.get("market_side"),
+                "direction": row.get("direction"),
+                "trader_side": row.get("trader_side"),
+                "price": row.get("price"),
+                "size": row.get("size"),
+                "fee_rate_bps": row.get("fee_rate_bps"),
+                "match_ts_ms": row.get("match_ts_ms"),
+                "recv_ms": env.recv_unix_ms,
+                "recv_monotonic_ns": env.recv_monotonic_ns,
+                "capture_seq": env.capture_seq,
+                "maker_address": row.get("maker_address"),
+                "tx_hash": row.get("tx_hash"),
+                "raw_json": as_json_text(row.get("raw_json")) or as_json_text(p),
+                "event_ts_ms": row.get("event_ts_ms"),
+                "status": row.get("status"),
+            }
+        )
+    return out
+
+
+def normalize_user_ws_log(env: RawEnvelope) -> Optional[Dict[str, Any]]:
+    p = env.payload_json
+    event_name = str(pick(p, "event_name", "eventName") or "").strip()
+    if not event_name:
+        return None
+    return {
+        "recv_ms": env.recv_unix_ms,
+        "recv_monotonic_ns": env.recv_monotonic_ns,
+        "capture_seq": env.capture_seq,
+        "event_name": event_name,
+        "event_value": str(pick(p, "event_value", "eventValue") or "") or None,
+        "detail": str(pick(p, "detail", "message") or "") or None,
     }
 
 
@@ -446,8 +520,27 @@ def dedup_trade_key(row: Dict[str, Any]) -> Tuple:
 
 def dedup_order_key(row: Dict[str, Any]) -> Tuple:
     return (
-        row.get("client_order_id"),
+        row.get("order_id") or row.get("client_order_id"),
         row.get("event_type"),
         row.get("status"),
-        row.get("recv_ms"),
+        row.get("event_ts_ms") or row.get("recv_ms"),
+    )
+
+
+def dedup_fill_key(row: Dict[str, Any]) -> Tuple:
+    trade_id = row.get("trade_id")
+    if trade_id:
+        return (
+            "id",
+            trade_id,
+            row.get("order_id") or row.get("taker_order_id"),
+            row.get("asset_id"),
+        )
+    return (
+        "fallback",
+        row.get("condition_id"),
+        row.get("asset_id"),
+        row.get("match_ts_ms"),
+        row.get("price"),
+        row.get("size"),
     )

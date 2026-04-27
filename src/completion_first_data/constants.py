@@ -20,7 +20,9 @@ REPLAY_TABLES = (
     "xuan_activity",
     "xuan_poll_log",
     "own_order_events",
+    "own_fill_events",
     "own_inventory_events",
+    "user_ws_log",
     "settlement_records",
 )
 
@@ -53,9 +55,13 @@ CHANNEL_BBA = "best_bid_ask"
 CHANNEL_LAST_TRADE = "last_trade_price"
 CHANNEL_ORDER = "order"
 CHANNEL_TRADE = "trade"
+CHANNEL_USER_ORDER = "user_order"
+CHANNEL_USER_TRADE = "user_trade"
 CHANNEL_MARKET_RESOLVED = "market_resolved"
 CHANNEL_MARKET_META = "market_meta"
 CHANNEL_INVENTORY = "inventory_event"
+CHANNEL_INVENTORY_SNAPSHOT = "inventory_snapshot"
+CHANNEL_USER_WS_LOG = "user_ws_log"
 CHANNEL_TRADES_BACKFILL = "trades_backfill"
 CHANNEL_XUAN_TRADES = "xuan_trades"
 CHANNEL_XUAN_ACTIVITY = "xuan_activity"
@@ -63,8 +69,10 @@ CHANNEL_XUAN_POLL_LOG = "xuan_poll_log"
 
 POLYMARKET_GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 POLYMARKET_CLOB_MARKETS_URL = "https://clob.polymarket.com/markets"
+POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_DATA_TRADES_URL = "https://data-api.polymarket.com/trades"
 POLYMARKET_DATA_ACTIVITY_URL = "https://data-api.polymarket.com/activity"
+POLYMARKET_DATA_POSITIONS_URL = "https://data-api.polymarket.com/positions"
 
 # Roughly around 5m rounds with light tolerance for bad metadata.
 ROUND_INTERVAL_TARGET_SEC = 300
