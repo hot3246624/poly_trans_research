@@ -215,6 +215,8 @@
 ## 假设与默认值
 
 - 默认只跑 `BTC 5m`
+- 当前推荐先跑 `public-only`，用于回测/研究阶段
+- `public + user truth` 留给后续实盘/执行真值验证阶段
 - 研究主线优先使用 `public + xuan + own truth`，不是全市场平台化
 - API creds 可由现有 key 恢复或现地生成；不得写入 repo-tracked 文件
 - `positions` 作为 canonical inventory source，`fills` 作为高频增量 source

@@ -2,6 +2,11 @@
 
 当前主线同时支持公开侧采集和可选的我方 user truth 采集。
 
+当前阶段建议：
+
+- 回测/研究：`public-only`
+- 实盘/执行真值验证：`public + user truth`
+
 ## 1. Raw Capture
 
 原始日分区路径：`data/raw/YYYY-MM-DD/<source>/<channel>.jsonl.gz`
@@ -66,6 +71,11 @@
 
 - `config/research.env`：非敏感运行参数
 - `config/.env`：敏感密钥
+
+公开侧常见两种配置：
+
+- `BTC-only`：`CF_MARKET_PREFIXES=btc-updown-5m` + `CF_MAX_MARKETS_PER_PREFIX=1`
+- `all active crypto 5m`：`CF_MARKET_PREFIXES=*` + `CF_MAX_MARKETS_PER_PREFIX=0`
 
 ## 5. Ops Docs
 

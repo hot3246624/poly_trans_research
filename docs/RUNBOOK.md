@@ -2,6 +2,16 @@
 
 本文档覆盖两种运行模式：`public-only` 和 `public + user truth`。
 
+## 当前阶段建议
+
+如果当前目标是“先采集数据做回测”，标准建议是：
+
+- 跑 `public-only`
+- 先从 `BTC 5m` 开始
+- 等 replay / validator / audit 稳定后，再考虑切到所有 active crypto `5m`
+
+只有当目标变成“验证我自己的执行链路”时，才开启 `public + user truth`。
+
 ## 0. 前置条件
 
 - 工作目录：`/Users/hot/web3Scientist/poly_trans_research`
@@ -36,6 +46,66 @@ CF_API_KEY=...
 CF_API_SECRET=...
 CF_API_PASSPHRASE=...
 ```
+
+注意：
+
+- `public-only` 用于回测/研究阶段
+- `public + user truth` 用于实盘/执行真值验证阶段
+
+## 0.1 两种公开侧启动方式
+
+### BTC-only
+
+```bash
+cat > /tmp/polytrans_btc_public.env <<'ENV'
+CF_MARKET_PREFIXES=btc-updown-5m
+CF_MARKET_CHANNELS=book,last_trade_price
+CF_DISABLE_USER_WS=true
+CF_USER_WS_ENABLED=false
+CF_META_ACTIVE_ONLY=true
+CF_MAX_MARKETS_PER_PREFIX=1
+CF_META_INTERVAL_SEC=20
+CF_META_SWITCH_DELAY_SEC=8
+CF_SETTLEMENT_POLL_ENABLED=true
+CF_SETTLEMENT_POLL_SEC=20
+CF_SETTLEMENT_POLL_COOLDOWN_SEC=30
+CF_XUAN_POLL_ENABLED=false
+CF_RAW_ROOT=data/raw
+CF_REPLAY_ROOT=data/replay
+ENV
+
+cd /Users/hot/web3Scientist/poly_trans_research
+uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file /tmp/polytrans_btc_public.env
+```
+
+### All active crypto 5m
+
+```bash
+cat > /tmp/polytrans_all_public.env <<'ENV'
+CF_MARKET_PREFIXES=*
+CF_MARKET_CHANNELS=book,last_trade_price
+CF_DISABLE_USER_WS=true
+CF_USER_WS_ENABLED=false
+CF_META_ACTIVE_ONLY=true
+CF_MAX_MARKETS_PER_PREFIX=0
+CF_META_INTERVAL_SEC=20
+CF_META_SWITCH_DELAY_SEC=8
+CF_SETTLEMENT_POLL_ENABLED=true
+CF_SETTLEMENT_POLL_SEC=20
+CF_SETTLEMENT_POLL_COOLDOWN_SEC=30
+CF_XUAN_POLL_ENABLED=false
+CF_RAW_ROOT=data/raw
+CF_REPLAY_ROOT=data/replay
+ENV
+
+cd /Users/hot/web3Scientist/poly_trans_research
+uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file /tmp/polytrans_all_public.env
+```
+
+区别：
+
+- `BTC-only`：更省流量、更省磁盘、适合先跑稳
+- `all active crypto 5m`：覆盖更全，但采样成本更高
 
 ## 1. 启动前 1h 门槛验证
 
