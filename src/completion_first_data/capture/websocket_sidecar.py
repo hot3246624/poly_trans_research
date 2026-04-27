@@ -61,6 +61,7 @@ _VALID_MARKET_CHANNELS = {"book", "last_trade_price", "best_bid_ask"}
 _DEBUG_RAW_CHANNEL = "market_raw_text"
 _ALL_MARKET_PREFIXES = {"*", "all", "all-5m", "crypto-5m"}
 _MARKET_WS_ASSET_WARNING_THRESHOLD = 256
+_MARKET_WS_IDLE_RECONNECT_SEC = 15.0
 
 
 @dataclass(slots=True)
@@ -1344,7 +1345,7 @@ async def _consume_market_ws(
             continue
 
         try:
-            async with websockets.connect(cfg.url, ping_interval=20, ping_timeout=20, max_size=None) as ws:
+            async with websockets.connect(cfg.url, ping_interval=None, max_size=None) as ws:
                 LOG.info(
                     "Connected: %s (revision=%d, assets=%d)",
                     cfg.name,
@@ -1352,6 +1353,7 @@ async def _consume_market_ws(
                     len(selection.asset_ids),
                 )
                 await ws.send(json.dumps(selection.subscribe_msg, ensure_ascii=False))
+                last_msg_monotonic = time.monotonic()
 
                 while not stop_event.is_set():
                     # Meta poll switched active token set -> reconnect and resubscribe.
@@ -1362,10 +1364,18 @@ async def _consume_market_ws(
                     try:
                         raw_msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     except asyncio.TimeoutError:
+                        idle_sec = time.monotonic() - last_msg_monotonic
+                        if idle_sec >= _MARKET_WS_IDLE_RECONNECT_SEC:
+                            LOG.warning(
+                                "market_ws idle for %.1fs; reconnect to refresh subscription",
+                                idle_sec,
+                            )
+                            break
                         continue
 
                     if isinstance(raw_msg, bytes):
                         raw_msg = raw_msg.decode("utf-8", errors="replace")
+                    last_msg_monotonic = time.monotonic()
 
                     if debug_raw_market_ws:
                         raw_store.write(
@@ -1661,3 +1671,4 @@ async def run_sidecar(config: SidecarConfig, duration_sec: Optional[int] = None)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        raw_store.close()
