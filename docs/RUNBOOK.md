@@ -12,6 +12,13 @@
 
 只有当目标变成“验证我自己的执行链路”时，才开启 `public + user truth`。
 
+## 0.0 CLOB V2 边界
+
+- `public-only` 当前依赖的是 `market_ws + gamma meta + gamma settlement`，不直接依赖旧版 CLOB Python SDK。
+- `public + user truth` 从现在开始应默认使用 `py-clob-client-v2`。
+- 如后续进入 execution 阶段，`2026-04-21` 之后 relayer `POST /submit` 返回的是 `transactionID`，不能再假设同步拿到 `transactionHash`。
+- `2026-04-28 11:00 UTC` 左右官方迁移窗口内若出现短时停机、open orders 清空或 WS 重连，应优先按官方 cutover 事件处理，不要先判定为本地采集器故障。
+
 ## 0. 前置条件
 
 - 工作目录：`/Users/hot/web3Scientist/poly_trans_research`

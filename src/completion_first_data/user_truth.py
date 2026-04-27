@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -147,6 +147,43 @@ def _normalize_text(value: Any) -> Optional[str]:
     return txt or None
 
 
+def _load_clob_sdk() -> Tuple[Any, Any, str]:
+    try:
+        from py_clob_client_v2 import ApiCreds, ClobClient
+
+        return ClobClient, ApiCreds, "v2"
+    except ImportError:
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds
+
+            return ClobClient, ApiCreds, "v1"
+        except ImportError as exc:  # pragma: no cover - dependency should exist in runtime
+            raise RuntimeError(
+                "Missing CLOB SDK. Install 'py-clob-client-v2' before enabling user truth."
+            ) from exc
+
+
+def _create_or_derive_api_creds(client: Any) -> Any:
+    if hasattr(client, "create_or_derive_api_key"):
+        return client.create_or_derive_api_key()
+    if hasattr(client, "create_or_derive_api_creds"):
+        return client.create_or_derive_api_creds()
+    raise RuntimeError("CLOB client is missing create/derive API credential method.")
+
+
+def _fetch_open_orders_rows(client: Any) -> List[Dict[str, Any]]:
+    if hasattr(client, "get_open_orders"):
+        rows = client.get_open_orders()
+    elif hasattr(client, "get_orders"):
+        rows = client.get_orders()
+    else:
+        raise RuntimeError("CLOB client is missing open-orders query method.")
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def mask_secret_id(value: str, visible: int = 8) -> str:
     txt = str(value or "")
     if len(txt) <= visible:
@@ -214,10 +251,7 @@ def resolve_user_auth_config(
     if not l1_private_key:
         return None
 
-    try:
-        from py_clob_client.client import ClobClient
-    except ImportError as exc:  # pragma: no cover - dependency should exist in runtime
-        raise RuntimeError("Missing dependency 'py-clob-client'. Install it before enabling user truth.") from exc
+    ClobClient, _, _ = _load_clob_sdk()
 
     kwargs: Dict[str, Any] = {
         "host": clob_rest_url,
@@ -230,7 +264,7 @@ def resolve_user_auth_config(
         kwargs["funder"] = funder_address
 
     client = ClobClient(**kwargs)
-    creds = client.create_or_derive_api_creds()
+    creds = _create_or_derive_api_creds(client)
     if creds is None:
         return None
 
@@ -249,11 +283,7 @@ def resolve_user_auth_config(
 def create_l2_client(auth: UserAuthConfig):
     if not auth.l1_private_key:
         return None
-    try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
-    except ImportError as exc:  # pragma: no cover - dependency should exist in runtime
-        raise RuntimeError("Missing dependency 'py-clob-client'. Install it before enabling user truth.") from exc
+    ClobClient, ApiCreds, _ = _load_clob_sdk()
 
     creds = ApiCreds(
         api_key=auth.api_key,
@@ -278,7 +308,7 @@ def _validate_api_creds(auth: UserAuthConfig) -> bool:
     if client is None:
         return False
     try:
-        client.get_orders()
+        _fetch_open_orders_rows(client)
         return True
     except Exception as exc:
         LOG.warning(
@@ -292,15 +322,13 @@ def fetch_open_orders(auth: UserAuthConfig, market_ids: Optional[Sequence[str]] 
     client = create_l2_client(auth)
     if client is None:
         return []
-    rows = client.get_orders()
-    if not isinstance(rows, list):
-        return []
+    rows = _fetch_open_orders_rows(client)
     if not market_ids:
-        return [row for row in rows if isinstance(row, dict)]
+        return rows
     wanted = {str(v or "").strip() for v in market_ids if str(v or "").strip()}
     if not wanted:
-        return [row for row in rows if isinstance(row, dict)]
-    return [row for row in rows if isinstance(row, dict) and str(row.get("market") or "").strip() in wanted]
+        return rows
+    return [row for row in rows if str(row.get("market") or "").strip() in wanted]
 
 
 def fetch_positions(

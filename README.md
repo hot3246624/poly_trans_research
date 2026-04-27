@@ -114,8 +114,15 @@ CF_API_PASSPHRASE=...
 认证优先级：
 
 1. `CF_API_KEY / CF_API_SECRET / CF_API_PASSPHRASE`
-2. `CF_L1_PRIVATE_KEY` 本地 `create_or_derive_api_creds`
+2. `CF_L1_PRIVATE_KEY` 本地派生 API creds（优先走 CLOB V2 SDK）
 3. 两者都缺失则自动退回 `public-only`
+
+## CLOB V2 注意事项
+
+- `2026-04-17` 的 CLOB V2 迁移对当前 `public-only` 采集主链路不是立刻阻断项。
+- 但 `public + user truth` 以及未来任何 execution / relayer 提交逻辑，都应基于 `py-clob-client-v2`。
+- 当前仓库的 user truth helper 已优先适配 V2 SDK；若运行环境里仍残留旧版 `py_clob_client`，仅作为临时兼容回退。
+- `2026-04-21` 之后 relayer `POST /submit` 返回的是 `transactionID`，不是最终 `transactionHash`。未来做 execution 时必须补一跳 `GET /transaction by id`。
 
 ## 采集
 

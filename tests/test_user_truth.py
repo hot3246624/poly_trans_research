@@ -129,7 +129,7 @@ class UserTruthHelpersTests(unittest.TestCase):
             api_passphrase = "fresh-pass"
 
         with patch("completion_first_data.user_truth._validate_api_creds", return_value=False), patch(
-            "py_clob_client.client.ClobClient.create_or_derive_api_creds",
+            "completion_first_data.user_truth._create_or_derive_api_creds",
             return_value=_FakeCreds(),
         ):
             cfg = resolve_user_auth_config(env)
