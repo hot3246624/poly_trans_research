@@ -57,7 +57,7 @@ CF_API_PASSPHRASE=...
 ### BTC-only
 
 ```bash
-cat > /tmp/polytrans_btc_public.env <<'ENV'
+cat > config/research.btc.public.env <<'ENV'
 CF_MARKET_PREFIXES=btc-updown-5m
 CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
@@ -75,13 +75,13 @@ CF_REPLAY_ROOT=data/replay
 ENV
 
 cd /Users/hot/web3Scientist/poly_trans_research
-uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file /tmp/polytrans_btc_public.env
+uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/research.btc.public.env
 ```
 
 ### All active crypto 5m
 
 ```bash
-cat > /tmp/polytrans_all_public.env <<'ENV'
+cat > config/research.all.public.env <<'ENV'
 CF_MARKET_PREFIXES=*
 CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
@@ -99,7 +99,7 @@ CF_REPLAY_ROOT=data/replay
 ENV
 
 cd /Users/hot/web3Scientist/poly_trans_research
-uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file /tmp/polytrans_all_public.env
+uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/research.all.public.env
 ```
 
 区别：
