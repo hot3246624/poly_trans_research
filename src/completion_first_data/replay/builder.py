@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
+import heapq
 import sqlite3
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, Iterator, List, Tuple
 
 from ..capture.envelope import RawEnvelope
 from ..constants import (
@@ -70,21 +71,38 @@ class ReplayBuilder:
         self.raw_day_root = raw_day_root
         self.replay_db_path = replay_db_path
 
-    def _load_envelopes(self) -> List[RawEnvelope]:
-        files = list(glob_jsonl_gz([self.raw_day_root]))
-        self._files_count = len(files)
-        envelopes: List[RawEnvelope] = []
-        for path in files:
-            for rec in iter_jsonl_gz(path):
-                envelopes.append(RawEnvelope.from_dict(rec))
-        envelopes.sort(key=lambda e: (e.capture_seq, e.recv_monotonic_ns, e.recv_unix_ms))
-        return envelopes
+    @staticmethod
+    def _sort_key(env: RawEnvelope) -> Tuple[int, int, int]:
+        return (env.capture_seq, env.recv_monotonic_ns, env.recv_unix_ms)
+
+    def _source_files(self) -> List[Path]:
+        return list(glob_jsonl_gz([self.raw_day_root]))
+
+    def _iter_envelopes(self, files: List[Path]) -> Iterator[RawEnvelope]:
+        # Each raw file is append-only in capture order. Merge them by capture sequence
+        # so replay build stays globally ordered without loading the whole day into memory.
+        heap: List[Tuple[Tuple[int, int, int], int, RawEnvelope, Iterator[dict]]] = []
+        for file_idx, path in enumerate(files):
+            iterator = iter(iter_jsonl_gz(path))
+            try:
+                env = RawEnvelope.from_dict(next(iterator))
+            except StopIteration:
+                continue
+            heapq.heappush(heap, (self._sort_key(env), file_idx, env, iterator))
+
+        while heap:
+            _, file_idx, env, iterator = heapq.heappop(heap)
+            yield env
+            try:
+                next_env = RawEnvelope.from_dict(next(iterator))
+            except StopIteration:
+                continue
+            heapq.heappush(heap, (self._sort_key(next_env), file_idx, next_env, iterator))
 
     def build(self) -> BuildStats:
         stats = BuildStats()
-        envelopes = self._load_envelopes()
-        stats.raw_files = self._files_count
-        stats.raw_records = len(envelopes)
+        files = self._source_files()
+        stats.raw_files = len(files)
 
         self.replay_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.replay_db_path)
@@ -103,7 +121,8 @@ class ReplayBuilder:
 
         cur = conn.cursor()
 
-        for env in envelopes:
+        for env in self._iter_envelopes(files):
+            stats.raw_records += 1
             source = env.source or ""
             channel = env.channel or ""
 
