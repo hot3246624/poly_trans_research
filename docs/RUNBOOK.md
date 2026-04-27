@@ -63,7 +63,7 @@ CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
 CF_USER_WS_ENABLED=false
 CF_META_ACTIVE_ONLY=true
-CF_MAX_MARKETS_PER_PREFIX=1
+CF_MAX_MARKETS_PER_PREFIX=2
 CF_META_INTERVAL_SEC=20
 CF_META_SWITCH_DELAY_SEC=8
 CF_SETTLEMENT_POLL_ENABLED=true
@@ -87,7 +87,7 @@ CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
 CF_USER_WS_ENABLED=false
 CF_META_ACTIVE_ONLY=true
-CF_MAX_MARKETS_PER_PREFIX=0
+CF_MAX_MARKETS_PER_PREFIX=2
 CF_META_INTERVAL_SEC=20
 CF_META_SWITCH_DELAY_SEC=8
 CF_SETTLEMENT_POLL_ENABLED=true
@@ -104,8 +104,13 @@ uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/r
 
 区别：
 
-- `BTC-only`：更省流量、更省磁盘、适合先跑稳
-- `all active crypto 5m`：覆盖更全，但采样成本更高
+- `BTC-only`：滚动跟踪 BTC 的当前轮和下一轮，更省流量、更省磁盘
+- `all active crypto 5m`：按 symbol 滚动跟踪当前轮和下一轮，覆盖更全
+
+注意：
+
+- 不要在长期运行里使用 `CF_MARKET_PREFIXES=*` 且 `CF_MAX_MARKETS_PER_PREFIX=0`
+- 那会把大量 future rounds 一次性订到单个 market WS，常见症状就是 `assets` 数暴涨、WS 反复断线、settlement 轮询 404/过载
 
 ## 1. 启动前 1h 门槛验证
 

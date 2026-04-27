@@ -74,8 +74,10 @@
 
 公开侧常见两种配置：
 
-- `BTC-only`：`CF_MARKET_PREFIXES=btc-updown-5m` + `CF_MAX_MARKETS_PER_PREFIX=1`
-- `all active crypto 5m`：`CF_MARKET_PREFIXES=*` + `CF_MAX_MARKETS_PER_PREFIX=0`
+- `BTC-only`：`CF_MARKET_PREFIXES=btc-updown-5m` + `CF_MAX_MARKETS_PER_PREFIX=2`
+- `all active crypto 5m`：`CF_MARKET_PREFIXES=*` + `CF_MAX_MARKETS_PER_PREFIX=2`
+
+这里的 `2` 表示滚动跟踪“当前轮 + 下一轮”。不要在长期运行里使用 `CF_MARKET_PREFIXES=*` 配 `CF_MAX_MARKETS_PER_PREFIX=0`，那会把 future rounds 一次性全部订到单个 market WS。
 
 ## 5. Ops Docs
 

@@ -61,7 +61,7 @@ CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
 CF_USER_WS_ENABLED=false
 CF_META_ACTIVE_ONLY=true
-CF_MAX_MARKETS_PER_PREFIX=1
+CF_MAX_MARKETS_PER_PREFIX=2
 CF_META_INTERVAL_SEC=20
 CF_META_SWITCH_DELAY_SEC=8
 CF_SETTLEMENT_POLL_ENABLED=true
@@ -71,14 +71,16 @@ CF_RAW_ROOT=data/raw
 CF_REPLAY_ROOT=data/replay
 ```
 
-这也是当前“回测/研究阶段”的推荐默认值。
+这也是当前“回测/研究阶段”的推荐默认值。`2` 表示同一 symbol 同时跟踪“当前轮 + 下一轮”，避免 round rollover 时漏掉前几秒。
 
 如果要同时采所有 active crypto `5m` 市场：
 
 ```env
 CF_MARKET_PREFIXES=*
-CF_MAX_MARKETS_PER_PREFIX=0
+CF_MAX_MARKETS_PER_PREFIX=2
 ```
+
+不要用 `CF_MAX_MARKETS_PER_PREFIX=0` 做长期运行。对于 `*`，那会把大量 future rounds 一次性订到同一个 market WS，连接和 settlement 轮询都会被拖垮。
 
 ### Public + User Truth 额外项
 
@@ -142,7 +144,7 @@ CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
 CF_USER_WS_ENABLED=false
 CF_META_ACTIVE_ONLY=true
-CF_MAX_MARKETS_PER_PREFIX=1
+CF_MAX_MARKETS_PER_PREFIX=2
 CF_META_INTERVAL_SEC=20
 CF_META_SWITCH_DELAY_SEC=8
 CF_SETTLEMENT_POLL_ENABLED=true
@@ -157,7 +159,7 @@ cd /Users/hot/web3Scientist/poly_trans_research
 uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/research.btc.public.env
 ```
 
-### 全部 active crypto 5m，回测扩容版
+### 全部 active crypto 5m，滚动全市场版
 
 ```bash
 cat > config/research.all.public.env <<'ENV'
@@ -166,7 +168,7 @@ CF_MARKET_CHANNELS=book,last_trade_price
 CF_DISABLE_USER_WS=true
 CF_USER_WS_ENABLED=false
 CF_META_ACTIVE_ONLY=true
-CF_MAX_MARKETS_PER_PREFIX=0
+CF_MAX_MARKETS_PER_PREFIX=2
 CF_META_INTERVAL_SEC=20
 CF_META_SWITCH_DELAY_SEC=8
 CF_SETTLEMENT_POLL_ENABLED=true
@@ -183,8 +185,8 @@ uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/r
 
 区别：
 
-- `BTC-only`：流量和磁盘占用最低，适合先把回测链路跑稳
-- `all active crypto 5m`：覆盖更大，但 raw/replay 增长会明显更快
+- `BTC-only`：只跟踪 BTC 的当前轮和下一轮，流量最低
+- `all active crypto 5m`：按 symbol 滚动跟踪“当前轮 + 下一轮”，适合长期全市场采集
 
 当前 sidecar 行为：
 

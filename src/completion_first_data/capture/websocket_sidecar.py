@@ -60,6 +60,7 @@ LOG = logging.getLogger(__name__)
 _VALID_MARKET_CHANNELS = {"book", "last_trade_price", "best_bid_ask"}
 _DEBUG_RAW_CHANNEL = "market_raw_text"
 _ALL_MARKET_PREFIXES = {"*", "all", "all-5m", "crypto-5m"}
+_MARKET_WS_ASSET_WARNING_THRESHOLD = 256
 
 
 @dataclass(slots=True)
@@ -123,6 +124,7 @@ class MarketSelectionSnapshot:
     asset_ids: List[str]
     asset_to_condition_id: Dict[str, str]
     asset_to_market_side: Dict[str, str]
+    condition_id_to_slug: Dict[str, str]
     subscribe_msg: Optional[Dict[str, Any]]
 
 
@@ -213,6 +215,7 @@ class MarketSelectionState:
             asset_ids=[],
             asset_to_condition_id={},
             asset_to_market_side={},
+            condition_id_to_slug={},
             subscribe_msg=None,
         )
 
@@ -224,12 +227,14 @@ class MarketSelectionState:
             asset_ids=list(s.asset_ids),
             asset_to_condition_id=dict(s.asset_to_condition_id),
             asset_to_market_side=dict(s.asset_to_market_side),
+            condition_id_to_slug=dict(s.condition_id_to_slug),
             subscribe_msg=dict(s.subscribe_msg) if isinstance(s.subscribe_msg, dict) else None,
         )
 
     def update_from_markets(self, markets: Sequence[MarketMetaRecord]) -> bool:
         subscribe_msg = build_market_subscription_message(markets)
         asset_to_condition_id, asset_to_market_side = build_asset_maps(markets)
+        condition_id_to_slug = {m.condition_id: m.slug for m in markets}
         asset_ids = sorted(asset_to_condition_id.keys())
         condition_ids = [m.condition_id for m in markets]
 
@@ -251,6 +256,7 @@ class MarketSelectionState:
             asset_ids=asset_ids,
             asset_to_condition_id=asset_to_condition_id,
             asset_to_market_side=asset_to_market_side,
+            condition_id_to_slug=condition_id_to_slug,
             subscribe_msg=subscribe_msg,
         )
         return True
@@ -343,6 +349,19 @@ def _market_rank(rec: MarketMetaRecord, now_ms: int) -> Tuple[int, int, int]:
     return (2, now_ms - rec.end_ms, -rec.end_ms)
 
 
+def _limit_market_group(
+    group: Sequence[MarketMetaRecord],
+    *,
+    per_group: int,
+    now_ms: int,
+) -> List[MarketMetaRecord]:
+    if per_group > 0:
+        limited = sorted(group, key=lambda m: _market_rank(m, now_ms))[:per_group]
+    else:
+        limited = list(group)
+    return sorted(limited, key=lambda m: (m.start_ms, m.end_ms, m.slug))
+
+
 def select_markets_by_prefix(
     metas: Sequence[MarketMetaRecord],
     prefixes: Sequence[str],
@@ -362,15 +381,27 @@ def select_markets_by_prefix(
 
     for prefix in clean:
         if prefix in _ALL_MARKET_PREFIXES:
-            group = list(metas)
+            if per_prefix > 0:
+                grouped: Dict[str, List[MarketMetaRecord]] = {}
+                for rec in metas:
+                    grouped.setdefault(rec.symbol or "UNKNOWN", []).append(rec)
+                group = []
+                for symbol in sorted(grouped.keys()):
+                    group.extend(
+                        _limit_market_group(
+                            grouped[symbol],
+                            per_group=per_prefix,
+                            now_ms=now,
+                        )
+                    )
+            else:
+                group = list(metas)
         else:
             group = [m for m in metas if m.slug.lower().startswith(prefix)]
         if not group:
             continue
 
-        if per_prefix > 0:
-            group = sorted(group, key=lambda m: _market_rank(m, now))[:per_prefix]
-        group = sorted(group, key=lambda m: (m.start_ms, m.end_ms, m.slug))
+        group = _limit_market_group(group, per_group=per_prefix if prefix not in _ALL_MARKET_PREFIXES else 0, now_ms=now)
 
         for rec in group:
             if rec.condition_id in seen_condition_ids:
@@ -1395,6 +1426,12 @@ async def _meta_poller(
                 snap.revision,
                 reason,
             )
+            if len(snap.asset_ids) > _MARKET_WS_ASSET_WARNING_THRESHOLD:
+                LOG.warning(
+                    "selected asset count=%d is unusually high for a single market WS subscription; "
+                    "prefer rolling capture with CF_MAX_MARKETS_PER_PREFIX=2",
+                    len(snap.asset_ids),
+                )
 
     while not stop_event.is_set():
         now_ms = int(time.time() * 1000)
@@ -1497,9 +1534,18 @@ async def _settlement_poller(
                 continue
             if now_ms < next_check_ms.get(cid, 0):
                 continue
+            market_slug = snap.condition_id_to_slug.get(cid)
+            if not market_slug:
+                next_check_ms[cid] = now_ms + (max(1, cfg.per_condition_cooldown_sec) * 1000)
+                continue
 
             try:
-                record = await asyncio.to_thread(fetch_condition_settlement, cid, session=session)
+                record = await asyncio.to_thread(
+                    fetch_condition_settlement,
+                    cid,
+                    market_slug=market_slug,
+                    session=session,
+                )
             except Exception as exc:
                 LOG.warning("settlement poll failed for %s: %s", cid, exc)
                 next_check_ms[cid] = now_ms + (max(1, cfg.per_condition_cooldown_sec) * 1000)

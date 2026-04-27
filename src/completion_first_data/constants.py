@@ -68,6 +68,7 @@ CHANNEL_XUAN_ACTIVITY = "xuan_activity"
 CHANNEL_XUAN_POLL_LOG = "xuan_poll_log"
 
 POLYMARKET_GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
+POLYMARKET_GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 POLYMARKET_CLOB_MARKETS_URL = "https://clob.polymarket.com/markets"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_DATA_TRADES_URL = "https://data-api.polymarket.com/trades"

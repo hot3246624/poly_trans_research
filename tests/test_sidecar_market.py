@@ -11,10 +11,11 @@ from completion_first_data.capture.websocket_sidecar import (
 
 
 def _rec(condition_id: str, slug: str, start_ms: int, end_ms: int, yes_token: str, no_token: str) -> MarketMetaRecord:
+    symbol = slug.split("-")[0].upper()
     return MarketMetaRecord(
         condition_id=condition_id,
         slug=slug,
-        symbol="BTC",
+        symbol=symbol,
         interval_sec=300,
         start_ms=start_ms,
         end_ms=end_ms,
@@ -58,6 +59,28 @@ class SidecarSelectionTests(unittest.TestCase):
         self.assertEqual(
             [m.condition_id for m in selected],
             ["btc_cond", "eth_cond", "sol_cond"],
+        )
+
+    def test_select_markets_wildcard_limit_is_applied_per_symbol_family(self) -> None:
+        now_ms = 1_000_000
+        markets = [
+            _rec("btc_active", "btc-updown-5m-10", now_ms - 1_000, now_ms + 10_000, "11", "12"),
+            _rec("btc_next", "btc-updown-5m-20", now_ms + 20_000, now_ms + 30_000, "13", "14"),
+            _rec("btc_far", "btc-updown-5m-30", now_ms + 40_000, now_ms + 50_000, "15", "16"),
+            _rec("eth_active", "eth-updown-5m-10", now_ms - 1_000, now_ms + 10_000, "21", "22"),
+            _rec("eth_next", "eth-updown-5m-20", now_ms + 20_000, now_ms + 30_000, "23", "24"),
+            _rec("eth_far", "eth-updown-5m-30", now_ms + 40_000, now_ms + 50_000, "25", "26"),
+        ]
+
+        selected = select_markets_by_prefix(
+            markets,
+            ["*"],
+            max_markets_per_prefix=2,
+            now_ms=now_ms,
+        )
+        self.assertEqual(
+            [m.condition_id for m in selected],
+            ["btc_active", "eth_active", "btc_next", "eth_next"],
         )
 
     def test_build_market_subscription_message_official_shape(self) -> None:
