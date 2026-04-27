@@ -1,13 +1,14 @@
-# poly_trans_research BTC 5m Public Capture Refactor
+# poly_trans_research Crypto 5m Public Capture Refactor
 
 ## 摘要
 
-把 `poly_trans_research` 重构成独立的 `BTC 5m` 研究采集器，主线只做 **public market data**，不依赖交易程序，不默认加载任何密钥。  
+把 `poly_trans_research` 重构成独立的 `crypto 5m` 研究采集器，主线只做 **public market data**，不依赖交易程序，不默认加载任何密钥。  
 本次设计同时**预留一个可选的 auth/user_ws 接口位**，但默认关闭，不进入第一阶段采样主流程。
 
 第一阶段目标固定为：
 
-- 只采 `BTC 5m`
+- 默认采 `BTC 5m`
+- 支持切换到所有 active crypto `5m`
 - 只采 `market + meta`
 - 连续采 `3` 个 UTC 日
 - 自动构建 replay sqlite
@@ -30,6 +31,10 @@
   - `max_markets_per_prefix=1`
   - `meta_interval_sec=20`
 
+- 同时支持全量 active crypto `5m` 选择：
+  - `CF_MARKET_PREFIXES=*`
+  - `CF_MAX_MARKETS_PER_PREFIX=0`
+
 新增独立 research 配置项：
 
 - `CF_MARKET_PREFIXES=btc-updown-5m`
@@ -46,7 +51,7 @@
 在 `capture/websocket_sidecar.py` 重写 market 订阅构造：
 
 - 不再按 `condition_id + channel` 发订阅
-- 改为从 `capture/meta.py` 获取当前活跃 `BTC 5m` round 的 `yes_token_id/no_token_id`
+- 改为从 `capture/meta.py` 获取当前被选中 active crypto `5m` rounds 的 `yes_token_id/no_token_id`
 - 用现行官方 market WS 口径订阅：
   - `type=market`
   - `assets_ids=[yes_token_id,no_token_id]`
@@ -111,9 +116,10 @@
 - 正确解析 `condition_id / slug / yes_token_id / no_token_id / start_ms / end_ms`
 
 2. market subscription builder
-- 给定活跃 `BTC 5m` meta，生成官方 market 订阅报文
+- 给定活跃 crypto `5m` meta，生成官方 market 订阅报文
 - token 变化时生成新订阅集合
 - `max_markets_per_prefix=1` 时只保留当前活跃 round
+- `CF_MARKET_PREFIXES=*` 时可覆盖所有 active crypto `5m`
 
 3. book normalization
 - `book` 初始快照可形成完整 L1
@@ -128,7 +134,7 @@
 
 1. 单 round 冒烟
 - 启动 sidecar，连接官方 `market` WS
-- 订阅当前活跃 `BTC 5m`
+- 订阅当前选择范围内的 active crypto `5m`
 - 生成 gzip raw 数据
 - `build-replay` 产出 sqlite，且 `md_book_l1 > 0`、`md_trades > 0`
 
@@ -143,7 +149,7 @@
 ### 3天验收
 
 - 连续 `3` 个 UTC 日都能生成 replay sqlite
-- 每日 `BTC 5m` round 覆盖率 `>= 95%`
+- 默认 `BTC 5m` round 覆盖率 `>= 95%`
 - 每日 `md_book_l1` 与 `md_trades` 均非空
 - 无需交易私钥、API key、`user_ws`
 - 存储量显著低于旧 full raw recorder 方案

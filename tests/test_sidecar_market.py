@@ -41,6 +41,25 @@ class SidecarSelectionTests(unittest.TestCase):
         )
         self.assertEqual([m.condition_id for m in selected], ["cond_active"])
 
+    def test_select_markets_wildcard_can_capture_all_5m_markets(self) -> None:
+        now_ms = 1_000_000
+        markets = [
+            _rec("btc_cond", "btc-updown-5m-10", now_ms - 1_000, now_ms + 10_000, "11", "12"),
+            _rec("eth_cond", "eth-updown-5m-10", now_ms - 1_000, now_ms + 10_000, "21", "22"),
+            _rec("sol_cond", "sol-updown-5m-10", now_ms - 1_000, now_ms + 10_000, "31", "32"),
+        ]
+
+        selected = select_markets_by_prefix(
+            markets,
+            ["*"],
+            max_markets_per_prefix=0,
+            now_ms=now_ms,
+        )
+        self.assertEqual(
+            [m.condition_id for m in selected],
+            ["btc_cond", "eth_cond", "sol_cond"],
+        )
+
     def test_build_market_subscription_message_official_shape(self) -> None:
         markets = [_rec("cond1", "btc-updown-5m-1", 1000, 1300, "100", "200")]
         msg = build_market_subscription_message(markets)

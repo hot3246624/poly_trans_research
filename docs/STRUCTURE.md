@@ -1,4 +1,4 @@
-# Repository Structure (BTC 5m Public Capture)
+# Repository Structure (Crypto 5m Public Capture)
 
 当前主线围绕 `docs/PLAN_Codex.md` 的第一阶段目标：
 
@@ -38,6 +38,7 @@
 - `config/research.env.example`
 
 默认值为 BTC 5m public capture，不依赖私钥。
+如需采所有 active crypto `5m`，设置 `CF_MARKET_PREFIXES=*` 与 `CF_MAX_MARKETS_PER_PREFIX=0`。
 
 ## Ops Docs
 

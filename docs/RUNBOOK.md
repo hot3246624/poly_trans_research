@@ -1,4 +1,4 @@
-# Runbook (BTC 5m Public Capture)
+# Runbook (Crypto 5m Public Capture)
 
 本文档是第一阶段的实操手册：启动、监控、验收、停止。
 
@@ -7,6 +7,7 @@
 - 使用 `config/research.env`（不要把真实私钥写入仓库文件）。
 - 第一阶段默认不启用 `user_ws`，不需要钱包私钥/API 私钥。
 - 建议在项目根目录执行：`/Users/hot/web3Scientist/poly_trans_research`
+- 默认配置是 `BTC 5m`；如果要采所有 active crypto `5m`，把 `CF_MARKET_PREFIXES=*` 与 `CF_MAX_MARKETS_PER_PREFIX=0` 写入 `config/research.env`。
 
 ## 1. 启动前 1h 门槛验证
 

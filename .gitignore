@@ -27,6 +27,9 @@ chart.html
 chart.png
 trades.json
 report_path
+
+# Dedicated legacy tool outputs
+outputs/**
 # Local runtime config (may contain sensitive endpoints/accounts)
 config/*.json
 config/*.env

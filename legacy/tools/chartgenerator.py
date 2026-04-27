@@ -2,11 +2,18 @@ import sys
 import json
 import datetime
 import re
+from pathlib import Path
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.patheffects as pe
 import matplotlib.ticker as ticker
+
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from output_paths import prepare_output_bundle
 
 # ----------------------------------------
 # CONFIG
@@ -20,8 +27,6 @@ STYLES = {
 
 SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 TRADES_URL = "https://data-api.polymarket.com/trades"
-DEFAULT_TRADE_FILE = "trades.json"
-DEFAULT_REPORT_FILE = "report_path"
 PRICE_RESOLUTION_THRESHOLD = 0.5
 
 # ----------------------------------------
@@ -329,6 +334,7 @@ def main():
             return
         market_title = raw_data[0].get("title", "Unknown Market")
         condition_id = raw_data[0].get("conditionId", "")
+        user_address = None
     else:
         market_query = input("Enter market name to search: ").strip()
         if not market_query:
@@ -359,12 +365,13 @@ def main():
             print("No trades returned for that user/market.")
             return
 
-        with open(DEFAULT_TRADE_FILE, "w") as f:
-            json.dump(raw_data, f, indent=2)
-        print(f"Saved {len(raw_data)} trades to {DEFAULT_TRADE_FILE}")
-
     # Sort by timestamp
     raw_data.sort(key=lambda x: x.get("timestamp", 0))
+
+    output_bundle = prepare_output_bundle(raw_data, market_title=market_title, user_address=user_address)
+    with open(output_bundle.trades_json, "w") as f:
+        json.dump(raw_data, f, indent=2)
+    print(f"Saved {len(raw_data)} trades to {output_bundle.trades_json}")
 
     # Parse trades
     parsed = []
@@ -784,11 +791,11 @@ def main():
         axis.set_xlim(*xlim_range)
 
     plt.tight_layout()
-    plt.savefig("chart.png", dpi=200, bbox_inches="tight")
+    plt.savefig(output_bundle.chart_png, dpi=200, bbox_inches="tight")
     plt.close('all')
 
     write_stats_report(
-        DEFAULT_REPORT_FILE,
+        output_bundle.report_txt,
         target_market,
         resolved_side,
         len(parsed),
@@ -819,8 +826,9 @@ def main():
         parsed,
     )
 
-    print("Chart saved as chart.png")
-    # print(f"Stats report saved as {DEFAULT_REPORT_FILE}")
+    print(f"Chart saved to {output_bundle.chart_png}")
+    print(f"Stats report saved to {output_bundle.report_txt}")
+    print(f"Output directory: {output_bundle.root_dir}")
 
 if __name__ == "__main__":
     main()

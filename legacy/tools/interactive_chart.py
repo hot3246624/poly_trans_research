@@ -6,6 +6,7 @@ import datetime
 from datetime import timezone
 import re
 import html
+from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -14,13 +15,17 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from output_paths import prepare_output_bundle
+
 # ----------------------------------------
 # CONFIG
 # ----------------------------------------
 SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 TRADES_URL = "https://data-api.polymarket.com/trades"
-DEFAULT_CHART_FILE = "chart.html"
-DEFAULT_TRADE_FILE = "trades.json"
 
 # Visual Style Map
 STYLES = {
@@ -397,13 +402,15 @@ def main():
         
         # 2. Fetch Data
         raw_trades = fetch_trades(condition_id, address)
-        if raw_trades:
-            with open(DEFAULT_TRADE_FILE, 'w') as f:
-                json.dump(raw_trades, f, indent=2)
 
     if not raw_trades:
         print("No trades found.")
         return
+
+    output_bundle = prepare_output_bundle(raw_trades, market_title=market_title, user_address=address)
+    with open(output_bundle.trades_json, "w") as f:
+        json.dump(raw_trades, f, indent=2)
+    print(f"Saved {len(raw_trades)} trades to {output_bundle.trades_json}")
         
     # 3. Parse
     parsed = parse_trades(raw_trades)
@@ -599,8 +606,8 @@ def main():
     fig.update_yaxes(title_text="Exposure ($)", row=3, col=1)
     fig.update_yaxes(title_text="Exposure (sh)", row=4, col=1)
 
-    fig.write_html(DEFAULT_CHART_FILE)
-    print(f"Chart saved to {DEFAULT_CHART_FILE}")
+    fig.write_html(output_bundle.chart_html)
+    print(f"Chart saved to {output_bundle.chart_html}")
 
     # 5. Generate Analysis Table
     # ---------------------------
@@ -617,9 +624,9 @@ def main():
         ),
         "trade_count": len(parsed),
     }
-    analysis_file = "analysis_table.html"
-    generate_html_table(table_rows, analysis_file, summary=summary, metadata=analysis_meta)
-    print(f"Analysis table saved to {analysis_file}")
+    generate_html_table(table_rows, output_bundle.analysis_html, summary=summary, metadata=analysis_meta)
+    print(f"Analysis table saved to {output_bundle.analysis_html}")
+    print(f"Output directory: {output_bundle.root_dir}")
 
 def calculate_table_metrics(parsed_trades):
     """

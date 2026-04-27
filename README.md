@@ -1,10 +1,11 @@
-# poly_trans_research (BTC 5m Public Capture)
+# poly_trans_research (Crypto 5m Public Capture)
 
-本仓库当前主线是 **BTC 5m public market data** 采集与回放，不依赖交易程序，也不默认加载任何私钥/API key。
+本仓库当前主线是 **crypto 5m public market data** 采集与回放，不依赖交易程序，也不默认加载任何私钥/API key。
 
 ## 第一阶段范围
 
-- 只采 `BTC 5m`
+- 默认采 `BTC 5m`
+- 可切到“所有 active crypto `5m` 市场”
 - 只采 `market + meta`
 - `user_ws` 默认关闭
 - 连续采样后构建 replay sqlite
@@ -52,6 +53,13 @@ pip install -r requirements.txt
 - `CF_RAW_ROOT=data/raw`
 - `CF_REPLAY_ROOT=data/replay`
 
+如果要同时采所有活跃的 crypto `5m` 市场，而不是只采 `BTC`：
+
+- `CF_MARKET_PREFIXES=*`
+- `CF_MAX_MARKETS_PER_PREFIX=0`
+
+这里的 `*` 表示“所有 crypto 5m 市场”，`0` 表示“不限每个前缀的数量”。
+
 ## 采集
 
 ### 1) sidecar（推荐）
@@ -62,12 +70,26 @@ python cfdata.py capture-sidecar-env --env-file config/research.env
 
 这会：
 
-- 从 `market_meta` 解析当前活跃 BTC 5m round 的 `yes/no token_id`
+- 从 `market_meta` 解析当前被选中的 active crypto `5m` rounds 的 `yes/no token_id`
 - 按官方 `type=market` 订阅 schema 连接 market WS
 - sidecar 内直接标准化写入 `book` 与 `last_trade_price`
 - 当轮次切换（token 集变化）时自动重连切换
 - 轮次切换时默认延迟 8s 切换订阅，降低旧 round 尾部丢样概率
 - 自动补抓 `settlement_records`（基于 `clob /markets/{condition_id}` 的 winner）
+
+如果你使用：
+
+- `CF_MARKET_PREFIXES=btc-updown-5m`
+- `CF_MAX_MARKETS_PER_PREFIX=1`
+
+那么行为是“只订阅当前 active 的 BTC `5m` round”。
+
+如果你使用：
+
+- `CF_MARKET_PREFIXES=*`
+- `CF_MAX_MARKETS_PER_PREFIX=0`
+
+那么行为是“订阅所有 active crypto `5m` 市场”。
 
 可选打开 xuan 轮询（默认关闭）：
 
@@ -172,3 +194,9 @@ python cfdata.py validate-replay --replay-root data/replay --day <UTC-YYYY-MM-DD
 - `scripts/ops/watchdog_replay_lag.py`: 60s 检查 `md_book_l1` 最新时间，超阈值可触发重启命令
 - `scripts/ops/disk_guard.py`: 数据目录体积/磁盘可用空间阈值检查
 - `scripts/ops/hourly_rebuild.sh`: 每小时滚动 build + validate
+
+## Legacy 分析工具输出
+
+- `chartgenerator.py` 与 `interactive_chart.py` 的产出会统一写到 `outputs/trade_analysis/`
+- 每次运行会创建一个独立目录，目录名包含市场标识、账户地址摘要与运行时间
+- 典型产物包括：`trades.json`、`chart.html`、`analysis_table.html`、`chart.png`、`report.txt`

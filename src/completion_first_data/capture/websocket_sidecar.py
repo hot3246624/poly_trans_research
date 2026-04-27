@@ -34,6 +34,7 @@ from ..constants import (
 LOG = logging.getLogger(__name__)
 _VALID_MARKET_CHANNELS = {"book", "last_trade_price", "best_bid_ask"}
 _DEBUG_RAW_CHANNEL = "market_raw_text"
+_ALL_MARKET_PREFIXES = {"*", "all", "all-5m", "crypto-5m"}
 
 
 @dataclass(slots=True)
@@ -314,7 +315,10 @@ def select_markets_by_prefix(
     seen_condition_ids: set[str] = set()
 
     for prefix in clean:
-        group = [m for m in metas if m.slug.lower().startswith(prefix)]
+        if prefix in _ALL_MARKET_PREFIXES:
+            group = list(metas)
+        else:
+            group = [m for m in metas if m.slug.lower().startswith(prefix)]
         if not group:
             continue
 
