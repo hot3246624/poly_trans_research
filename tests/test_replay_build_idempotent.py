@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from completion_first_data.capture.raw_store import RawCaptureStore
 from completion_first_data.replay.builder import ReplayBuilder, build_replay_for_day
@@ -168,6 +169,50 @@ class ReplayBuildIdempotentTests(unittest.TestCase):
             self.assertEqual(meta_rows, 1)
             self.assertEqual(book_rows, 1)
             self.assertEqual(trade_rows, 1)
+
+    def test_builder_emits_low_frequency_progress_logs(self) -> None:
+        recv_ms = 1_760_000_000_000
+        day = day_from_ms(recv_ms)
+        condition_id = "0xcond"
+
+        with tempfile.TemporaryDirectory() as tmp_raw, tempfile.TemporaryDirectory() as tmp_replay:
+            store = RawCaptureStore(tmp_raw)
+            for i in range(3):
+                store.write(
+                    source="market_ws",
+                    channel="book",
+                    condition_id=condition_id,
+                    recv_unix_ms=recv_ms + i,
+                    payload_json={
+                        "condition_id": condition_id,
+                        "yes_bid_px": 0.50,
+                        "yes_ask_px": 0.51,
+                        "no_bid_px": 0.49,
+                        "no_ask_px": 0.50,
+                        "yes_bid_sz": 10.0 + i,
+                        "yes_ask_sz": 11.0,
+                        "no_bid_sz": 9.0,
+                        "no_ask_sz": 12.0,
+                        "source_ts_ms": recv_ms + i,
+                    },
+                )
+            store.close()
+
+            builder = ReplayBuilder(
+                raw_day_root=Path(tmp_raw) / day,
+                replay_db_path=Path(tmp_replay) / day / "crypto_5m.sqlite",
+            )
+            with (
+                patch("completion_first_data.replay.builder.PROGRESS_LOG_EVERY_RECORDS", 1),
+                patch("completion_first_data.replay.builder.PROGRESS_LOG_MIN_INTERVAL_SEC", 0.0),
+                self.assertLogs("completion_first_data.replay.builder", level="INFO") as captured,
+            ):
+                builder.build()
+
+            joined = "\n".join(captured.output)
+            self.assertIn("replay build started", joined)
+            self.assertIn("replay build progress", joined)
+            self.assertIn("replay build finished", joined)
 
 
 if __name__ == "__main__":

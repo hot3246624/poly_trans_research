@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import heapq
+import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Tuple
 
@@ -43,6 +45,10 @@ from .normalize import (
     normalize_xuan_trade,
 )
 from .schema import init_schema
+
+LOG = logging.getLogger("completion_first_data.replay.builder")
+PROGRESS_LOG_EVERY_RECORDS = 250_000
+PROGRESS_LOG_MIN_INTERVAL_SEC = 15.0
 
 
 @dataclasses.dataclass(slots=True)
@@ -103,6 +109,16 @@ class ReplayBuilder:
         stats = BuildStats()
         files = self._source_files()
         stats.raw_files = len(files)
+        build_started = time.monotonic()
+        last_progress_log = build_started
+        next_progress_at = PROGRESS_LOG_EVERY_RECORDS
+
+        LOG.info(
+            "replay build started: day=%s raw_files=%d db=%s",
+            self.replay_db_path.parent.name,
+            stats.raw_files,
+            self.replay_db_path,
+        )
 
         self.replay_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.replay_db_path)
@@ -123,6 +139,22 @@ class ReplayBuilder:
 
         for env in self._iter_envelopes(files):
             stats.raw_records += 1
+            if stats.raw_records >= next_progress_at:
+                now = time.monotonic()
+                if now - last_progress_log >= PROGRESS_LOG_MIN_INTERVAL_SEC:
+                    LOG.info(
+                        "replay build progress: day=%s raw_records=%d md_book_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d current_capture_seq=%d",
+                        self.replay_db_path.parent.name,
+                        stats.raw_records,
+                        stats.md_book_rows,
+                        stats.md_trades_rows,
+                        stats.market_meta_rows,
+                        stats.settlement_rows,
+                        stats.dedup_skips,
+                        env.capture_seq,
+                    )
+                    last_progress_log = now
+                next_progress_at += PROGRESS_LOG_EVERY_RECORDS
             source = env.source or ""
             channel = env.channel or ""
 
@@ -535,6 +567,17 @@ class ReplayBuilder:
 
         conn.commit()
         conn.close()
+        LOG.info(
+            "replay build finished: day=%s raw_records=%d md_book_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d elapsed_sec=%.1f",
+            self.replay_db_path.parent.name,
+            stats.raw_records,
+            stats.md_book_rows,
+            stats.md_trades_rows,
+            stats.market_meta_rows,
+            stats.settlement_rows,
+            stats.dedup_skips,
+            time.monotonic() - build_started,
+        )
         return stats
 
 
