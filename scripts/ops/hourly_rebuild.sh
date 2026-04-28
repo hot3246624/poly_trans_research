@@ -4,6 +4,4 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-python3 cfdata.py --log-level INFO build-replay-rolling --hours 24
-DAY_UTC="$(date -u +%F)"
-python3 cfdata.py --log-level INFO validate-replay --day "$DAY_UTC"
+python3 cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest

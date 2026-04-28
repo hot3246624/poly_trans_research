@@ -228,6 +228,14 @@ python cfdata.py build-replay --raw-root data/raw --replay-root data/replay --da
 python cfdata.py build-replay-rolling --hours 24
 ```
 
+长期后台循环建议直接使用：
+
+```bash
+python cfdata.py build-replay-rolling --hours 24 --validate-latest
+```
+
+不要在外层 shell 里再单独拼 `validate-replay --day "$(date -u +%F)"`。跨 UTC 零点时，这会让“构建窗口”和“校验日期”来自两个不同时间点，进而误报缺库或 `unable to open database file`。
+
 ## 验证
 
 ```bash

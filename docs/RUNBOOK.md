@@ -164,13 +164,17 @@ nohup uv run python cfdata.py --log-level INFO capture-sidecar-env \
 cd /Users/hot/web3Scientist/poly_trans_research
 nohup bash -lc '
 while true; do
-  uv run python cfdata.py --log-level INFO build-replay-rolling --hours 24
-  DAY_UTC=$(date -u +%F)
-  uv run python cfdata.py --log-level INFO validate-replay --day "$DAY_UTC" || true
+  uv run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
   sleep 3600
 done
 ' > data/logs/rebuild_3d_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
+
+注意：
+
+- 长期运行不要把 `build-replay-rolling` 和外层 `validate-replay --day "$(date -u +%F)"` 拆成两条命令。
+- 这会在跨 UTC 零点时引入竞态：rolling build 仍在构建前一份时间快照，而 shell 已经拿到新的 `DAY_UTC`，结果会误报 `unable to open database file`。
+- 标准做法是直接使用 `build-replay-rolling --validate-latest`，让“构建哪一天”和“校验哪一天”共享同一快照。
 
 ## 3. 运行期监控
 

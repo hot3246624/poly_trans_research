@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import logging
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -35,6 +36,28 @@ LOG = logging.getLogger("completion_first_data")
 
 def _default_day() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _rolling_days(hours: int, now: Optional[dt.datetime] = None) -> List[str]:
+    snap = now or dt.datetime.now(dt.timezone.utc)
+    start = snap - dt.timedelta(hours=max(1, hours))
+    days: List[str] = []
+    cursor = start.date()
+    while cursor <= snap.date():
+        days.append(cursor.strftime("%Y-%m-%d"))
+        cursor += dt.timedelta(days=1)
+    return days
+
+
+def _replay_db_path(replay_root: str | Path, day: str) -> Path:
+    return Path(replay_root) / day / "crypto_5m.sqlite"
+
+
+def _require_existing_replay_db(db: Path, action: str) -> bool:
+    if db.exists():
+        return True
+    LOG.error("%s skipped: replay db missing: %s", action, db)
+    return False
 
 
 def _parse_condition_ids(values: Optional[List[str]], file_path: Optional[str]) -> List[str]:
@@ -440,18 +463,20 @@ def cmd_build_replay_rolling(args: argparse.Namespace) -> int:
     raw_root = args.raw_root or os.getenv("CF_RAW_ROOT", "data/raw")
     replay_root = args.replay_root or os.getenv("CF_REPLAY_ROOT", "data/replay")
     hours = max(1, int(args.hours))
-
-    now = dt.datetime.now(dt.timezone.utc)
-    start = now - dt.timedelta(hours=hours)
-    days: List[str] = []
-    cursor = start.date()
-    while cursor <= now.date():
-        days.append(cursor.strftime("%Y-%m-%d"))
-        cursor += dt.timedelta(days=1)
+    days = _rolling_days(hours)
 
     for day in days:
         stats = build_replay_for_day(Path(raw_root), Path(replay_root), day)
         LOG.info("rolling build done [%s]: %s", day, json.dumps(stats.as_dict(), ensure_ascii=False))
+
+    if args.validate_latest:
+        latest_day = days[-1]
+        db = _replay_db_path(replay_root, latest_day)
+        if not _require_existing_replay_db(db, f"rolling validation latest_day={latest_day}"):
+            return 3
+        report = validate_replay_db(db, gap_threshold_ms=args.gap_threshold_ms)
+        LOG.info("rolling validation [%s]: %s", latest_day, json.dumps(report.as_dict(), ensure_ascii=False))
+        return 0 if report.all_passed else 2
     return 0
 
 
@@ -461,9 +486,16 @@ def cmd_validate_replay(args: argparse.Namespace) -> int:
         db = Path(args.db_path)
     else:
         day = args.day or _default_day()
-        db = Path(replay_root) / day / "crypto_5m.sqlite"
+        db = _replay_db_path(replay_root, day)
 
-    report = validate_replay_db(db, gap_threshold_ms=args.gap_threshold_ms)
+    if not _require_existing_replay_db(db, "validation"):
+        return 3
+
+    try:
+        report = validate_replay_db(db, gap_threshold_ms=args.gap_threshold_ms)
+    except sqlite3.OperationalError as exc:
+        LOG.error("validation failed to open replay db %s: %s", db, exc)
+        return 3
     if args.output:
         save_report(report, Path(args.output))
         LOG.info("saved validation report -> %s", args.output)
@@ -478,17 +510,24 @@ def cmd_audit_startup(args: argparse.Namespace) -> int:
         db = Path(args.db_path)
     else:
         day = args.day or _default_day()
-        db = Path(replay_root) / day / "crypto_5m.sqlite"
+        db = _replay_db_path(replay_root, day)
 
-    report = run_startup_audit(
-        db,
-        require_user_truth=args.require_user_truth,
-        taker_side_null_max_ratio=args.taker_side_null_max_ratio,
-        min_market_meta_rounds=args.min_market_meta_rounds,
-        min_settlement_rows=args.min_settlement_rows,
-        min_xuan_poll_points=args.min_xuan_poll_points,
-        max_abs_avg_trade_latency_ms=args.max_abs_avg_trade_latency_ms,
-    )
+    if not _require_existing_replay_db(db, "startup audit"):
+        return 3
+
+    try:
+        report = run_startup_audit(
+            db,
+            require_user_truth=args.require_user_truth,
+            taker_side_null_max_ratio=args.taker_side_null_max_ratio,
+            min_market_meta_rounds=args.min_market_meta_rounds,
+            min_settlement_rows=args.min_settlement_rows,
+            min_xuan_poll_points=args.min_xuan_poll_points,
+            max_abs_avg_trade_latency_ms=args.max_abs_avg_trade_latency_ms,
+        )
+    except sqlite3.OperationalError as exc:
+        LOG.error("startup audit failed to open replay db %s: %s", db, exc)
+        return 3
     if args.output:
         save_startup_audit_report(report, Path(args.output))
         LOG.info("saved startup audit report -> %s", args.output)
@@ -589,6 +628,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw-root")
     p.add_argument("--replay-root")
     p.add_argument("--hours", type=int, default=24, help="Rolling window size in hours")
+    p.add_argument(
+        "--validate-latest",
+        action="store_true",
+        help="Validate the latest built UTC day from the same rolling window snapshot",
+    )
+    p.add_argument(
+        "--gap-threshold-ms",
+        type=int,
+        default=0,
+        help="Optional max allowed intra-round gap for --validate-latest (<=0 disables)",
+    )
     p.set_defaults(func=cmd_build_replay_rolling)
 
     p = sub.add_parser("validate-replay", help="Validate replay DB against BTC 5m public-capture gates")

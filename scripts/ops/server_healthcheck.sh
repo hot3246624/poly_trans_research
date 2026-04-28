@@ -97,18 +97,14 @@ restart_rebuild() {
     nohup bash -lc '
       END_EPOCH_UTC='"$rem"' ; START_NOW=$(date -u +%s) ; STOP_AT=$((START_NOW + END_EPOCH_UTC))
       while [ "$(date -u +%s)" -lt "$STOP_AT" ]; do
-        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24
-        DAY_UTC=$(date -u +%F)
-        '"$UV_BIN"' run python cfdata.py --log-level INFO validate-replay --day "$DAY_UTC" || true
+        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
         sleep 3600
       done
     ' >> "$REBUILD_LOG" 2>&1 < /dev/null &
   else
     nohup bash -lc '
       while true; do
-        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24
-        DAY_UTC=$(date -u +%F)
-        '"$UV_BIN"' run python cfdata.py --log-level INFO validate-replay --day "$DAY_UTC" || true
+        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
         sleep 3600
       done
     ' >> "$REBUILD_LOG" 2>&1 < /dev/null &

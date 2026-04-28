@@ -165,4 +165,4 @@
 
 - `build-replay` 对同一 UTC 日按“重建”口径执行，避免滚动运行时重复写入导致 replay 漂移。
 - `audit-startup` 的 xuan 轮询点统计口径以 `xuan_trades/xuan_activity` 与 `xuan_poll_log(ok=1)` 的较大值为准，避免“成功轮询但无新成交”被误判失败。
-- 第一阶段默认运维路径：持续 sidecar + 每小时 `build-replay-rolling --hours 24`。
+- 第一阶段默认运维路径：持续 sidecar + 每小时 `build-replay-rolling --hours 24 --validate-latest`。
