@@ -11,7 +11,9 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import requests
 
 from .capture.ingest import ingest_ndjson
 from .capture.meta import MarketMetaFetchState, backfill_trades_once, capture_market_meta_once
@@ -25,11 +27,25 @@ from .capture.websocket_sidecar import (
     load_sidecar_config,
     run_sidecar,
 )
-from .capture.xuan_poller import XuanPollConfig
+from .capture.xuan_poller import XuanPollConfig, _parse_ts_ms
+from .quality.replay_market_audit import (
+    AuditConfig,
+    run_market_replay_audit,
+    safety_gate,
+    save_audit_report,
+)
 from .quality.startup_audit import save_startup_audit_report, run_startup_audit
 from .quality.validator import save_report, validate_replay_db
 from .replay.builder import build_replay_for_day
 from .user_truth import resolve_user_auth_config
+from .constants import (
+    CHANNEL_XUAN_ACTIVITY,
+    CHANNEL_XUAN_POLL_LOG,
+    CHANNEL_XUAN_TRADES,
+    POLYMARKET_DATA_ACTIVITY_URL,
+    POLYMARKET_DATA_TRADES_URL,
+    SOURCE_KIND_XUAN_POLL,
+)
 
 LOG = logging.getLogger("completion_first_data")
 
@@ -536,6 +552,293 @@ def cmd_audit_startup(args: argparse.Namespace) -> int:
     return 0 if report.all_passed else 2
 
 
+def _parse_utc_iso(value: str) -> dt.datetime:
+    txt = value.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(txt)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _row_ts_ms(row: Dict[str, Any]) -> Optional[int]:
+    return _parse_ts_ms(row.get("timestamp") or row.get("time") or row.get("createdAt"))
+
+
+def _data_api_rows(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("trades") or payload.get("history") or payload.get("activity") or payload.get("data") or []
+    else:
+        rows = []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _fetch_xuan_window(
+    *,
+    session: requests.Session,
+    url: str,
+    user: str,
+    start_ms: int,
+    end_ms: int,
+    page_limit: int,
+    max_pages: int,
+    include_taker_only_false: bool,
+    timeout_sec: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows_in_window: List[Dict[str, Any]] = []
+    scanned = 0
+    before_cursor_s: Optional[int] = int(end_ms / 1000)
+    oldest_seen: Optional[int] = None
+    newest_seen: Optional[int] = None
+    page_cap_hit = False
+
+    for page in range(max(1, max_pages)):
+        params: Dict[str, Any] = {
+            "limit": max(1, page_limit),
+            "user": user,
+        }
+        if before_cursor_s is not None:
+            params["before"] = before_cursor_s
+        if include_taker_only_false:
+            params["takerOnly"] = "false"
+
+        resp = session.get(url, params=params, timeout=max(1, timeout_sec))
+        resp.raise_for_status()
+        page_rows = _data_api_rows(resp.json())
+        if not page_rows:
+            break
+
+        page_oldest: Optional[int] = None
+        for row in page_rows:
+            scanned += 1
+            ts_ms = _row_ts_ms(row)
+            if ts_ms is None:
+                continue
+            oldest_seen = ts_ms if oldest_seen is None else min(oldest_seen, ts_ms)
+            newest_seen = ts_ms if newest_seen is None else max(newest_seen, ts_ms)
+            page_oldest = ts_ms if page_oldest is None else min(page_oldest, ts_ms)
+            if start_ms <= ts_ms < end_ms:
+                rows_in_window.append(row)
+
+        if page_oldest is None:
+            break
+        if page_oldest < start_ms:
+            break
+        if len(page_rows) < max(1, page_limit):
+            break
+        before_cursor_s = max(0, int(page_oldest / 1000) - 1)
+        if page == max(1, max_pages) - 1:
+            page_cap_hit = True
+
+    complete = not (page_cap_hit and (oldest_seen is None or oldest_seen >= start_ms))
+    summary = {
+        "rows_scanned": scanned,
+        "rows_in_window": len(rows_in_window),
+        "oldest_seen_ms": oldest_seen,
+        "newest_seen_ms": newest_seen,
+        "page_cap_hit": page_cap_hit,
+        "target_window_complete": complete,
+    }
+    return rows_in_window, summary
+
+
+def _write_xuan_backfill_rows(
+    *,
+    raw_store: RawCaptureStore,
+    user: str,
+    endpoint: str,
+    rows: List[Dict[str, Any]],
+    poll_ts_ms: int,
+) -> Optional[int]:
+    max_ts: Optional[int] = None
+    for row in sorted(rows, key=lambda r: _row_ts_ms(r) or 0):
+        ts_ms = _row_ts_ms(row)
+        if ts_ms is not None:
+            max_ts = ts_ms if max_ts is None else max(max_ts, ts_ms)
+        if endpoint == "trades":
+            payload = {
+                "user": user,
+                "poll_ts_ms": poll_ts_ms,
+                "condition_id": row.get("conditionId"),
+                "trade_ts_ms": ts_ms,
+                "trade_id": row.get("id"),
+                "tx_hash": row.get("transactionHash"),
+                "asset": row.get("asset"),
+                "outcome": row.get("outcome"),
+                "side": row.get("side"),
+                "price": row.get("price"),
+                "size": row.get("size"),
+                "slug": row.get("slug"),
+                "event_slug": row.get("eventSlug"),
+                "title": row.get("title"),
+                "proxy_wallet": row.get("proxyWallet"),
+                "source_quality": "data_api_backfill",
+                "raw_json": row,
+            }
+            raw_store.write(
+                source=SOURCE_KIND_XUAN_POLL,
+                channel=CHANNEL_XUAN_TRADES,
+                payload_json=payload,
+                condition_id=str(row.get("conditionId") or ""),
+                recv_unix_ms=ts_ms or poll_ts_ms,
+            )
+        elif endpoint == "activity":
+            payload = {
+                "user": user,
+                "poll_ts_ms": poll_ts_ms,
+                "condition_id": row.get("conditionId"),
+                "activity_ts_ms": ts_ms,
+                "activity_type": row.get("type"),
+                "tx_hash": row.get("transactionHash"),
+                "asset": row.get("asset"),
+                "outcome": row.get("outcome"),
+                "side": row.get("side"),
+                "price": row.get("price"),
+                "size": row.get("size"),
+                "usdc_size": row.get("usdcSize"),
+                "slug": row.get("slug"),
+                "event_slug": row.get("eventSlug"),
+                "title": row.get("title"),
+                "proxy_wallet": row.get("proxyWallet"),
+                "source_quality": "data_api_backfill",
+                "raw_json": row,
+            }
+            raw_store.write(
+                source=SOURCE_KIND_XUAN_POLL,
+                channel=CHANNEL_XUAN_ACTIVITY,
+                payload_json=payload,
+                condition_id=str(row.get("conditionId") or ""),
+                recv_unix_ms=ts_ms or poll_ts_ms,
+            )
+    raw_store.write(
+        source=SOURCE_KIND_XUAN_POLL,
+        channel=CHANNEL_XUAN_POLL_LOG,
+        payload_json={
+            "user": user,
+            "endpoint": endpoint,
+            "poll_ts_ms": poll_ts_ms,
+            "rows": len(rows),
+            "max_ts_ms": max_ts,
+            "ok": True,
+            "error": None,
+            "source_quality": "data_api_backfill",
+        },
+        recv_unix_ms=poll_ts_ms,
+    )
+    return max_ts
+
+
+def cmd_backfill_xuan_public(args: argparse.Namespace) -> int:
+    start_dt = _parse_utc_iso(args.start)
+    end_dt = _parse_utc_iso(args.end)
+    if end_dt <= start_dt:
+        raise SystemExit("--end must be later than --start")
+
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+    session = requests.Session()
+    trade_rows, trade_summary = _fetch_xuan_window(
+        session=session,
+        url=POLYMARKET_DATA_TRADES_URL,
+        user=args.user,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        page_limit=args.page_limit,
+        max_pages=args.max_pages,
+        include_taker_only_false=True,
+        timeout_sec=args.timeout_sec,
+    )
+    activity_rows, activity_summary = _fetch_xuan_window(
+        session=session,
+        url=POLYMARKET_DATA_ACTIVITY_URL,
+        user=args.user,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        page_limit=args.page_limit,
+        max_pages=args.max_pages,
+        include_taker_only_false=False,
+        timeout_sec=args.timeout_sec,
+    )
+    can_cover = bool(trade_summary["target_window_complete"] and activity_summary["target_window_complete"])
+    report = {
+        "user": args.user,
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
+        "dry_run": bool(args.dry_run),
+        "can_cover_target_window": can_cover,
+        "trades": trade_summary,
+        "activity": activity_summary,
+    }
+
+    if not args.dry_run:
+        raw_store = RawCaptureStore(args.raw_root)
+        poll_ts_ms = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+        try:
+            _write_xuan_backfill_rows(
+                raw_store=raw_store,
+                user=args.user,
+                endpoint="trades",
+                rows=trade_rows,
+                poll_ts_ms=poll_ts_ms,
+            )
+            _write_xuan_backfill_rows(
+                raw_store=raw_store,
+                user=args.user,
+                endpoint="activity",
+                rows=activity_rows,
+                poll_ts_ms=poll_ts_ms,
+            )
+        finally:
+            raw_store.close()
+        report["raw_root"] = args.raw_root
+
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOG.info("xuan_backfill_public: %s", json.dumps(report, ensure_ascii=False))
+    return 0 if can_cover else 2
+
+
+def cmd_audit_replay_market(args: argparse.Namespace) -> int:
+    days = [d.strip() for d in args.days.split(",") if d.strip()]
+    if not days:
+        raise SystemExit("--days is required, e.g. --days 2026-04-27,2026-04-28")
+    min_db_bytes = max(0, int(args.min_db_bytes))
+    replay_root = Path(args.replay_root)
+
+    if not args.skip_safety_gate:
+        ok, failures = safety_gate(
+            replay_root=replay_root,
+            days=days,
+            min_db_bytes=min_db_bytes,
+            min_mem_available_kib=max(0, int(args.min_mem_available_mib)) * 1024,
+            min_disk_free_bytes=max(0, int(args.min_disk_free_gb)) * 1024**3,
+            max_load_1m=float(args.max_load_1m),
+        )
+        if not ok:
+            LOG.error("audit safety gate failed: %s", ", ".join(failures))
+            return 3
+
+    config = AuditConfig(
+        raw_root=Path(args.raw_root),
+        replay_root=replay_root,
+        days=days,
+        min_db_bytes=min_db_bytes,
+        raw_trade_max_records=max(0, int(args.raw_trade_max_records)),
+        raw_book_max_records=max(0, int(args.raw_book_max_records)),
+        taker_side_null_max_ratio=float(args.taker_side_null_max_ratio),
+    )
+    report = run_market_replay_audit(config)
+    save_audit_report(report, Path(args.output), Path(args.markdown_output) if args.markdown_output else None)
+    LOG.info("saved replay market audit report -> %s", args.output)
+    LOG.info("replay market audit verdict: %s", json.dumps(report["final_verdict"], ensure_ascii=False))
+    return 0 if report["final_verdict"].get("market_replay_trusted") else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cfdata",
@@ -661,6 +964,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-xuan-poll-points", type=int, default=12)
     p.add_argument("--max-abs-avg-trade-latency-ms", type=int, default=60000)
     p.set_defaults(func=cmd_audit_startup)
+
+    p = sub.add_parser("audit-replay-market", help="Run read-only market-side replay credibility audit")
+    p.add_argument("--days", required=True, help="Comma-separated UTC days, e.g. 2026-04-27,2026-04-28")
+    p.add_argument("--raw-root", default="data/raw")
+    p.add_argument("--replay-root", default="data/replay")
+    p.add_argument("--output", default="data/replay/audits/replay_audit_report.json")
+    p.add_argument("--markdown-output", default="data/replay/audits/replay_audit_report.md")
+    p.add_argument("--min-db-bytes", type=int, default=100 * 1024 * 1024)
+    p.add_argument("--raw-trade-max-records", type=int, default=1_000_000)
+    p.add_argument("--raw-book-max-records", type=int, default=250_000)
+    p.add_argument("--taker-side-null-max-ratio", type=float, default=0.05)
+    p.add_argument("--min-mem-available-mib", type=int, default=1536)
+    p.add_argument("--min-disk-free-gb", type=int, default=100)
+    p.add_argument("--max-load-1m", type=float, default=1.5)
+    p.add_argument(
+        "--skip-safety-gate",
+        action="store_true",
+        help="Skip process/resource gate; intended only for local fixtures/tests",
+    )
+    p.set_defaults(func=cmd_audit_replay_market)
+
+    p = sub.add_parser("backfill-xuan-public", help="Dry-run or write xuan public Data API history into raw")
+    p.add_argument("--user", required=True)
+    p.add_argument("--start", required=True, help="UTC ISO timestamp, e.g. 2026-04-27T00:00:00Z")
+    p.add_argument("--end", required=True, help="UTC ISO timestamp, e.g. 2026-04-29T00:00:00Z")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--raw-root", default="data/raw")
+    p.add_argument("--page-limit", type=int, default=500)
+    p.add_argument("--max-pages", type=int, default=30)
+    p.add_argument("--timeout-sec", type=int, default=20)
+    p.add_argument("--output", help="Optional JSON report path")
+    p.set_defaults(func=cmd_backfill_xuan_public)
 
     return parser
 

@@ -10,6 +10,7 @@ REBUILD_LOG="$ROOT_DIR/$LOG_DIR/rebuild_all_15d_current.log"
 HEALTH_LOG="$ROOT_DIR/$LOG_DIR/healthcheck_capture.log"
 SIDECAR_PID_FILE="$ROOT_DIR/$LOG_DIR/sidecar_all_15d.pid"
 REBUILD_PID_FILE="$ROOT_DIR/$LOG_DIR/rebuild_all_15d.pid"
+REPLAY_LOCK_PATH="${POLYTRANS_REPLAY_LOCK_PATH:-$ROOT_DIR/data/locks/replay_maintenance.lock}"
 RAW_ROOT_REL="${POLYTRANS_RAW_ROOT:-data/raw}"
 REPLAY_ROOT_REL="${POLYTRANS_REPLAY_ROOT:-data/replay}"
 MAX_RAW_STALE_SEC="${POLYTRANS_MAX_RAW_STALE_SEC:-600}"
@@ -19,6 +20,7 @@ MIN_DISK_FREE_GB="${POLYTRANS_MIN_DISK_FREE_GB:-20}"
 END_EPOCH_UTC="${POLYTRANS_END_EPOCH_UTC:-}"
 
 mkdir -p "$ROOT_DIR/$LOG_DIR"
+mkdir -p "$(dirname "$REPLAY_LOCK_PATH")"
 exec 9>"/tmp/polytrans_healthcheck.lock"
 if ! flock -n 9; then
   exit 0
@@ -97,14 +99,14 @@ restart_rebuild() {
     nohup bash -lc '
       END_EPOCH_UTC='"$rem"' ; START_NOW=$(date -u +%s) ; STOP_AT=$((START_NOW + END_EPOCH_UTC))
       while [ "$(date -u +%s)" -lt "$STOP_AT" ]; do
-        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
+        flock "'"$REPLAY_LOCK_PATH"'" '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
         sleep 3600
       done
     ' >> "$REBUILD_LOG" 2>&1 < /dev/null &
   else
     nohup bash -lc '
       while true; do
-        '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
+        flock "'"$REPLAY_LOCK_PATH"'" '"$UV_BIN"' run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest || true
         sleep 3600
       done
     ' >> "$REBUILD_LOG" 2>&1 < /dev/null &
