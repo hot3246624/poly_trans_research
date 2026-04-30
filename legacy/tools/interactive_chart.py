@@ -21,7 +21,7 @@ from trade_analysis import (
     calculate_table_metrics,
     calculate_trade_summary,
     describe_trade_source,
-    fetch_trades,
+    fetch_trades_detailed,
     parse_trades,
     resolve_market_identifier,
     trade_source_warning,
@@ -132,7 +132,13 @@ def _build_trade_nodes(parsed: list[dict]) -> list[dict]:
     return nodes
 
 
-def generate_chart(parsed: list[dict], market_title: str, output_html: Path) -> None:
+def generate_chart(
+    parsed: list[dict],
+    market_title: str,
+    output_html: Path,
+    *,
+    include_plotlyjs: bool | str = True,
+) -> None:
     min_ts = min(t["timestamp"] for t in parsed)
     max_ts = max(t["timestamp"] for t in parsed)
     start_et = parsed[0]["dt_et"]
@@ -207,7 +213,7 @@ def generate_chart(parsed: list[dict], market_title: str, output_html: Path) -> 
     fig.update_yaxes(title_text="Gross sh", row=2, col=1)
     fig.update_yaxes(title_text="Net spent ($)", row=3, col=1, zeroline=True, zerolinecolor="#888")
     fig.update_yaxes(title_text="Shares", row=4, col=1, zeroline=True, zerolinecolor="#888")
-    fig.write_html(output_html)
+    fig.write_html(output_html, include_plotlyjs=include_plotlyjs)
 
 
 def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, metadata: dict, totals: dict) -> None:
@@ -373,6 +379,20 @@ def main() -> None:
         market_title = raw_trades[0].get("title", "Unknown Market") if raw_trades else "Unknown Market"
         if raw_trades:
             condition_id = raw_trades[0].get("conditionId") or raw_trades[0].get("condition_id")
+        warning = trade_source_warning(raw_trades)
+        fetch_meta = {
+            "fetched_at": None,
+            "condition_id": condition_id or "N/A",
+            "user_address": address or "N/A",
+            "requested_source": "local_json",
+            "data_source": "local_json",
+            "view_mode": "local_json_view",
+            "trade_count": len(raw_trades),
+            "fallback_reason": None,
+            "warnings": [warning] if warning else [],
+            "endpoints": [],
+            "cache": {"enabled": False, "hit": False},
+        }
     else:
         if len(sys.argv) < 3:
             print("User Address required for API fetch.")
@@ -387,7 +407,9 @@ def main() -> None:
         market_title = market.get("question") or market.get("title") or (event or {}).get("title") or condition_id
         print(f"Matched market: {market_title}")
         print(f"Target Condition ID: {condition_id}")
-        raw_trades = fetch_trades(condition_id, address, page_limit=1000, verbose=True)
+        fetch_result = fetch_trades_detailed(condition_id, address, page_limit=1000, verbose=True)
+        raw_trades = fetch_result.trades
+        fetch_meta = fetch_result.meta
 
     if not raw_trades:
         print("No trades found.")
@@ -396,6 +418,8 @@ def main() -> None:
     output_bundle = prepare_output_bundle(raw_trades, market_title=market_title, user_address=address)
     output_bundle.trades_json.write_text(json.dumps(raw_trades, indent=2))
     print(f"Saved {len(raw_trades)} trades to {output_bundle.trades_json}")
+    output_bundle.fetch_meta_json.write_text(json.dumps(fetch_meta, indent=2, ensure_ascii=False))
+    print(f"Fetch metadata saved to {output_bundle.fetch_meta_json}")
 
     parsed = parse_trades(raw_trades)
     generate_chart(parsed, market_title, output_bundle.chart_html)
@@ -414,8 +438,9 @@ def main() -> None:
             f"{parsed[-1]['dt_et'].strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
         ),
         "trade_count": len(parsed),
-        "data_source": describe_trade_source(raw_trades),
-        "data_warning": trade_source_warning(raw_trades),
+        "data_source": fetch_meta.get("data_source") or describe_trade_source(raw_trades),
+        "data_warning": "; ".join(str(w) for w in fetch_meta.get("warnings", []) if w)
+        or trade_source_warning(raw_trades),
     }
     generate_html_table(table_rows, output_bundle.analysis_html, summary=summary, metadata=analysis_meta, totals=totals)
     print(f"Analysis table saved to {output_bundle.analysis_html}")

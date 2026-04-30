@@ -15,6 +15,7 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 class OutputBundle:
     root_dir: Path
     trades_json: Path
+    fetch_meta_json: Path
     chart_html: Path
     analysis_html: Path
     chart_png: Path
@@ -98,6 +99,7 @@ def prepare_output_bundle(
     return OutputBundle(
         root_dir=root_dir,
         trades_json=root_dir / "trades.json",
+        fetch_meta_json=root_dir / "fetch_meta.json",
         chart_html=root_dir / "chart.html",
         analysis_html=root_dir / "analysis_table.html",
         chart_png=root_dir / "chart.png",

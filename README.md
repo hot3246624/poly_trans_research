@@ -283,6 +283,15 @@ python cfdata.py audit-startup --day <UTC-YYYY-MM-DD> \
 
 ## Legacy 分析工具输出
 
+- 推荐入口：
+
+```bash
+uv run python legacy/tools/analyze_trade.py "https://polymarket.com/event/..." --user 0x...
+```
+
+- `analyze_trade.py` 支持 Polymarket URL、slug、conditionId 或市场名，默认会记住最近一次使用的钱包地址，并打开生成的 `analysis_table.html`
+- 默认 `--source auto`：只有目标地址匹配本地 CLOB funder 时才尝试 authenticated execution view；否则使用 public canonical view
+- 可用 `--source public|authenticated` 固定数据源，`--refresh` 绕过缓存，`--no-open` 只生成文件不打开
 - `chartgenerator.py` 与 `interactive_chart.py` 的产出统一写到 `outputs/trade_analysis/`
 - 每次运行会创建独立目录，目录名包含市场标识、账户摘要与运行时间
-- 典型产物：`trades.json`、`chart.html`、`analysis_table.html`、`chart.png`、`report.txt`
+- 典型产物：`trades.json`、`fetch_meta.json`、`chart.html`、`analysis_table.html`、`chart.png`、`report.txt`

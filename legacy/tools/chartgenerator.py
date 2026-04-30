@@ -19,7 +19,7 @@ from trade_analysis import (
     calculate_resolution_pnl,
     calculate_trade_summary,
     describe_trade_source,
-    fetch_trades,
+    fetch_trades_detailed,
     format_ts,
     infer_resolved_side_from_trades,
     normalize_resolved_side,
@@ -211,6 +211,21 @@ def main() -> None:
             return
         market_title = raw_data[0].get("title", "Unknown Market")
         user_address = None
+        condition_id = raw_data[0].get("conditionId") or raw_data[0].get("condition_id")
+        warning = trade_source_warning(raw_data)
+        fetch_meta = {
+            "fetched_at": None,
+            "condition_id": condition_id or "N/A",
+            "user_address": "N/A",
+            "requested_source": "local_json",
+            "data_source": "local_json",
+            "view_mode": "local_json_view",
+            "trade_count": len(raw_data),
+            "fallback_reason": None,
+            "warnings": [warning] if warning else [],
+            "endpoints": [],
+            "cache": {"enabled": False, "hit": False},
+        }
     else:
         market_query = market_query or input("Enter market URL, slug, conditionId, or name: ").strip()
         if not market_query:
@@ -232,7 +247,9 @@ def main() -> None:
             print("User address is required.")
             return
 
-        raw_data = fetch_trades(condition_id, user_address, page_limit=1000, verbose=True)
+        fetch_result = fetch_trades_detailed(condition_id, user_address, page_limit=1000, verbose=True)
+        raw_data = fetch_result.trades
+        fetch_meta = fetch_result.meta
         if not raw_data:
             print("No trades returned for that user/market.")
             return
@@ -241,6 +258,8 @@ def main() -> None:
     output_bundle = prepare_output_bundle(raw_data, market_title=market_title, user_address=user_address)
     output_bundle.trades_json.write_text(json.dumps(raw_data, indent=2))
     print(f"Saved {len(raw_data)} trades to {output_bundle.trades_json}")
+    output_bundle.fetch_meta_json.write_text(json.dumps(fetch_meta, indent=2, ensure_ascii=False))
+    print(f"Fetch metadata saved to {output_bundle.fetch_meta_json}")
 
     resolved_side = None
     if resolved_arg in {"YES", "NO"}:
@@ -470,8 +489,9 @@ def main() -> None:
         output_bundle.report_txt,
         target_market=target_market,
         resolved_side=resolved_side,
-        data_source=describe_trade_source(raw_data),
-        data_warning=trade_source_warning(raw_data),
+        data_source=str(fetch_meta.get("data_source") or describe_trade_source(raw_data)),
+        data_warning="; ".join(str(w) for w in fetch_meta.get("warnings", []) if w)
+        or trade_source_warning(raw_data),
         parsed=parsed,
         summary=summary,
         resolution=resolution,

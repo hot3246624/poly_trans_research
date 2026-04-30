@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 EVENTS_URL = "https://gamma-api.polymarket.com/events"
 TRADES_URL = "https://data-api.polymarket.com/trades"
 CLOB_URL = "https://clob.polymarket.com"
+CACHE_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "trade_analysis" / "_cache"
 PRICE_RESOLUTION_THRESHOLD = 0.5
 DEFAULT_DISPLAY_TZ = "America/New_York"
 EPSILON = 1e-9
@@ -37,6 +40,12 @@ L1_PRIVATE_KEY_ALIASES = ("CF_L1_PRIVATE_KEY", "POLYMARKET_PRIVATE_KEY")
 FUNDER_ADDRESS_ALIASES = ("POLYMARKET_FUNDER_ADDRESS", "ETHEREUM_ADDRESS")
 SIGNATURE_TYPE_ALIASES = ("CF_SIGNATURE_TYPE", "PM_SIGNATURE_TYPE")
 QUOTE_CHARS = "'\"“”‘’`"
+
+
+@dataclass
+class FetchResult:
+    trades: list[dict[str, Any]]
+    meta: dict[str, Any]
 
 
 @dataclass
@@ -118,6 +127,35 @@ def _mask_address(value: str) -> str:
     if len(text) <= 12:
         return text
     return f"{text[:6]}...{text[-4:]}"
+
+
+def _utc_now_label() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _json_cache_key(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _read_json_cache(namespace: str, key: str) -> Optional[dict[str, Any]]:
+    path = CACHE_ROOT / namespace / f"{key}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json_cache(namespace: str, key: str, payload: dict[str, Any]) -> Path:
+    path = CACHE_ROOT / namespace / f"{key}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    return path
+
+
+def _cache_path(namespace: str, key: str) -> Path:
+    return CACHE_ROOT / namespace / f"{key}.json"
 
 
 def _normalize_market_text(text: str | None) -> str:
@@ -700,6 +738,51 @@ def trade_source_warning(raw_data: Iterable[dict[str, Any]]) -> str:
     return ""
 
 
+def _clob_auth_context(user_address: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    env = _load_env()
+    configured_funder = _first_env(env, FUNDER_ADDRESS_ALIASES)
+    api_key = _first_env(env, API_KEY_ALIASES)
+    api_secret = _first_env(env, API_SECRET_ALIASES)
+    api_passphrase = _first_env(env, API_PASSPHRASE_ALIASES)
+    l1_private_key = _first_env(env, L1_PRIVATE_KEY_ALIASES)
+    signature_type_value = _first_env(env, SIGNATURE_TYPE_ALIASES)
+    try:
+        signature_type = int(signature_type_value) if signature_type_value else None
+    except ValueError:
+        signature_type = None
+
+    requested = str(user_address or "").strip()
+    context: dict[str, Any] = {
+        "attempted": False,
+        "can_attempt": False,
+        "requested_user": _mask_address(requested),
+        "configured_funder": _mask_address(configured_funder),
+        "reason": "",
+    }
+    secrets = {
+        "configured_funder": configured_funder,
+        "api_key": api_key,
+        "api_secret": api_secret,
+        "api_passphrase": api_passphrase,
+        "l1_private_key": l1_private_key,
+        "signature_type": signature_type,
+    }
+
+    if not configured_funder:
+        context["reason"] = "CLOB auth not configured"
+        return context, secrets
+    if configured_funder.lower() != requested.lower():
+        context["reason"] = "configured CLOB funder does not match requested user"
+        return context, secrets
+    if not l1_private_key:
+        context["reason"] = "CLOB auth requires CF_L1_PRIVATE_KEY/POLYMARKET_PRIVATE_KEY"
+        return context, secrets
+
+    context["can_attempt"] = True
+    context["reason"] = "configured CLOB funder matches requested user"
+    return context, secrets
+
+
 def _normalize_clob_direction(value: Any) -> str:
     return "SELL" if str(value or "").strip().upper() == "SELL" else "BUY"
 
@@ -808,36 +891,11 @@ def _fetch_authenticated_clob_trades(
     *,
     verbose: bool = False,
 ) -> Optional[list[dict[str, Any]]]:
-    env = _load_env()
-    configured_funder = _first_env(env, FUNDER_ADDRESS_ALIASES)
-    if not configured_funder:
+    auth_meta, auth_secrets = _clob_auth_context(user_address)
+    if not auth_meta["can_attempt"]:
         if verbose:
-            print("CLOB auth not configured; using public Data API fallback.")
+            print(f"{auth_meta['reason']}; using public Data API fallback.")
         return None
-
-    if configured_funder.lower() != str(user_address or "").strip().lower():
-        if verbose:
-            print(
-                "Configured CLOB funder "
-                f"{_mask_address(configured_funder)} does not match requested user "
-                f"{_mask_address(user_address)}; using public Data API fallback."
-            )
-        return None
-
-    api_key = _first_env(env, API_KEY_ALIASES)
-    api_secret = _first_env(env, API_SECRET_ALIASES)
-    api_passphrase = _first_env(env, API_PASSPHRASE_ALIASES)
-    l1_private_key = _first_env(env, L1_PRIVATE_KEY_ALIASES)
-    if not l1_private_key:
-        if verbose:
-            print("CLOB auth requires CF_L1_PRIVATE_KEY/POLYMARKET_PRIVATE_KEY; using public Data API fallback.")
-        return None
-
-    signature_type_value = _first_env(env, SIGNATURE_TYPE_ALIASES)
-    try:
-        signature_type = int(signature_type_value) if signature_type_value else None
-    except ValueError:
-        signature_type = None
 
     try:
         from py_clob_client_v2 import ApiCreds, ClobClient, TradeParams
@@ -848,16 +906,20 @@ def _fetch_authenticated_clob_trades(
 
     try:
         creds = None
-        if api_key and api_secret and api_passphrase:
-            creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
+        if auth_secrets["api_key"] and auth_secrets["api_secret"] and auth_secrets["api_passphrase"]:
+            creds = ApiCreds(
+                api_key=auth_secrets["api_key"],
+                api_secret=auth_secrets["api_secret"],
+                api_passphrase=auth_secrets["api_passphrase"],
+            )
 
         client = ClobClient(
             CLOB_URL,
             chain_id=137,
-            key=l1_private_key,
+            key=auth_secrets["l1_private_key"],
             creds=creds,
-            signature_type=signature_type,
-            funder=configured_funder,
+            signature_type=auth_secrets["signature_type"],
+            funder=auth_secrets["configured_funder"],
         )
         if creds is None:
             if hasattr(client, "create_or_derive_api_key"):
@@ -880,17 +942,13 @@ def _fetch_authenticated_clob_trades(
     return with_trade_source(normalized, "clob_user_trades")
 
 
-def fetch_trades(
+def fetch_public_trades(
     condition_id: str,
     user_address: str,
     *,
     page_limit: int = 1000,
     verbose: bool = False,
 ) -> list[dict[str, Any]]:
-    authenticated = _fetch_authenticated_clob_trades(condition_id, user_address, verbose=verbose)
-    if authenticated is not None:
-        return authenticated
-
     if verbose:
         print(f"Fetching public trades for market={condition_id}, user={user_address}...")
     session = _requests_session()
@@ -981,6 +1039,120 @@ def fetch_trades(
         return with_trade_source(filtered_user, "data_api_public_trades")
 
     return []
+
+
+def _fetch_cache_key(condition_id: str, user_address: str, source: str) -> str:
+    auth_meta, auth_secrets = _clob_auth_context(user_address)
+    return _json_cache_key(
+        {
+            "kind": "legacy_trade_fetch_v2",
+            "condition_id": str(condition_id or "").lower(),
+            "user_address": str(user_address or "").lower(),
+            "requested_source": source,
+            "configured_funder": str(auth_secrets.get("configured_funder") or "").lower(),
+            "auth_can_attempt": bool(auth_meta.get("can_attempt")),
+        }
+    )
+
+
+def fetch_trades_detailed(
+    condition_id: str,
+    user_address: str,
+    *,
+    source: str = "auto",
+    page_limit: int = 1000,
+    verbose: bool = False,
+    use_cache: bool = False,
+    refresh_cache: bool = False,
+) -> FetchResult:
+    requested_source = str(source or "auto").strip().lower()
+    if requested_source not in {"auto", "public", "authenticated"}:
+        raise ValueError("source must be one of: auto, public, authenticated")
+
+    auth_meta, _ = _clob_auth_context(user_address)
+    cache_key = _fetch_cache_key(condition_id, user_address, requested_source)
+    cache_info = {
+        "enabled": bool(use_cache),
+        "hit": False,
+        "key": cache_key,
+        "path": str(_cache_path("fetch", cache_key)),
+    }
+
+    if use_cache and not refresh_cache:
+        cached = _read_json_cache("fetch", cache_key)
+        if cached and isinstance(cached.get("trades"), list):
+            meta = cached.get("fetch_meta") if isinstance(cached.get("fetch_meta"), dict) else {}
+            meta["cache"] = {**cache_info, "hit": True}
+            meta["fetched_at"] = _utc_now_label()
+            meta["trade_count"] = len(cached["trades"])
+            return FetchResult(trades=cached["trades"], meta=meta)
+
+    meta: dict[str, Any] = {
+        "fetched_at": _utc_now_label(),
+        "condition_id": condition_id,
+        "user_address": user_address,
+        "requested_source": requested_source,
+        "data_source": None,
+        "view_mode": None,
+        "trade_count": 0,
+        "authenticated_clob": auth_meta,
+        "fallback_reason": None,
+        "warnings": [],
+        "endpoints": [],
+        "cache": cache_info,
+    }
+
+    trades: list[dict[str, Any]] = []
+    if requested_source in {"auto", "authenticated"}:
+        meta["authenticated_clob"]["attempted"] = bool(auth_meta["can_attempt"])
+        if auth_meta["can_attempt"]:
+            trades = _fetch_authenticated_clob_trades(condition_id, user_address, verbose=verbose) or []
+            meta["endpoints"].append("clob:/data/trades")
+            if trades:
+                meta["data_source"] = "authenticated_clob"
+                meta["view_mode"] = "authenticated_execution_view"
+            elif requested_source == "authenticated":
+                meta["data_source"] = "authenticated_clob"
+                meta["view_mode"] = "authenticated_execution_view"
+        elif requested_source == "authenticated":
+            meta["fallback_reason"] = auth_meta["reason"]
+            meta["warnings"].append("Authenticated source requested, but matching CLOB credentials are not available.")
+
+    if not trades and requested_source in {"auto", "public"}:
+        if requested_source == "auto" and auth_meta["reason"]:
+            meta["fallback_reason"] = auth_meta["reason"]
+        trades = fetch_public_trades(condition_id, user_address, page_limit=page_limit, verbose=verbose)
+        meta["endpoints"].append("data-api:/trades")
+        meta["data_source"] = "public_data_api"
+        meta["view_mode"] = "public_canonical_view"
+
+    if meta["data_source"] == "public_data_api":
+        warning = trade_source_warning(trades) or (
+            "Public Data API can canonicalize binary-market order direction; use matching CLOB credentials "
+            "to preserve UI actions such as SELL NO / SELL YES."
+        )
+        meta["warnings"].append(warning)
+
+    meta["trade_count"] = len(trades)
+    if use_cache and trades:
+        _write_json_cache("fetch", cache_key, {"trades": trades, "fetch_meta": meta})
+
+    return FetchResult(trades=trades, meta=meta)
+
+
+def fetch_trades(
+    condition_id: str,
+    user_address: str,
+    *,
+    page_limit: int = 1000,
+    verbose: bool = False,
+) -> list[dict[str, Any]]:
+    return fetch_trades_detailed(
+        condition_id,
+        user_address,
+        page_limit=page_limit,
+        verbose=verbose,
+    ).trades
 
 
 def format_ts(timestamp: int, *, tz_name: str = DEFAULT_DISPLAY_TZ) -> str:

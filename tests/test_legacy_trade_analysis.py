@@ -15,6 +15,7 @@ from trade_analysis import (
     calculate_table_metrics,
     calculate_trade_summary,
     extract_market_identifier,
+    fetch_trades_detailed,
     infer_resolved_side_from_trades,
     normalize_clob_user_trades,
     parse_trades,
@@ -189,6 +190,38 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
         self.assertEqual(identifier, "btc-updown-5m-1777439400")
         self.assertEqual(event["slug"], "btc-updown-5m-1777439400")
         self.assertEqual(market["conditionId"], "0x" + "c" * 64)
+
+    def test_fetch_trades_detailed_public_source_labels_public_view(self) -> None:
+        public_rows = [
+            {
+                "side": "SELL",
+                "outcome": "No",
+                "size": 2,
+                "price": 0.25,
+                "timestamp": 1001,
+                "source": "data_api_public_trades",
+            }
+        ]
+        with patch("trade_analysis.fetch_public_trades", return_value=public_rows) as public_fetch:
+            result = fetch_trades_detailed("0x" + "d" * 64, "0xuser", source="public")
+
+        public_fetch.assert_called_once()
+        self.assertEqual(result.meta["data_source"], "public_data_api")
+        self.assertEqual(result.meta["view_mode"], "public_canonical_view")
+        self.assertEqual(result.meta["trade_count"], 1)
+        self.assertEqual(result.trades[0]["source"], "data_api_public_trades")
+        self.assertIn("Public Data API", result.meta["warnings"][0])
+
+    def test_fetch_trades_detailed_authenticated_source_does_not_fallback_to_public(self) -> None:
+        with patch("trade_analysis._load_env", return_value={}), patch(
+            "trade_analysis.fetch_public_trades"
+        ) as public_fetch:
+            result = fetch_trades_detailed("0x" + "e" * 64, "0xuser", source="authenticated")
+
+        public_fetch.assert_not_called()
+        self.assertEqual(result.trades, [])
+        self.assertEqual(result.meta["requested_source"], "authenticated")
+        self.assertEqual(result.meta["fallback_reason"], "CLOB auth not configured")
 
 
 if __name__ == "__main__":
