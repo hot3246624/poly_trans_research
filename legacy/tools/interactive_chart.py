@@ -20,9 +20,11 @@ from trade_analysis import (
     calculate_summary,
     calculate_table_metrics,
     calculate_trade_summary,
+    describe_trade_source,
     fetch_trades,
     parse_trades,
-    search_market,
+    resolve_market_identifier,
+    trade_source_warning,
 )
 
 
@@ -214,6 +216,9 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
     user_text = html.escape(str(metadata.get("user_address") or "N/A"))
     range_text = html.escape(str(metadata.get("trade_time_range") or "N/A"))
     count_text = html.escape(str(metadata.get("trade_count") if metadata.get("trade_count") is not None else "N/A"))
+    source_text = html.escape(str(metadata.get("data_source") or "N/A"))
+    warning_text = str(metadata.get("data_warning") or "")
+    warning_block = f'<div class="warning">{html.escape(warning_text)}</div>' if warning_text else ""
 
     locked_cls = _money_class(float(summary["locked_profit"]))
     yes_cls = _money_class(float(summary["if_yes_wins_pnl"]))
@@ -297,6 +302,7 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
             .meta-line {{ margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px; }}
             .meta-item {{ font-size: 12px; color: #bbb; border: 1px solid #333; background: #1b1b1b; padding: 4px 8px; border-radius: 6px; }}
             .meta-label {{ color: #8a8a8a; }}
+            .warning {{ margin: 0 0 14px 0; color: #ffd166; border: 1px solid #5c4b1c; background: #241f10; padding: 8px 10px; border-radius: 6px; }}
             .summary-box {{ margin-top: 20px; padding: 14px; border: 1px solid #444; border-radius: 8px; max-width: 680px; }}
             .summary-box p {{ margin: 6px 0; }}
         </style>
@@ -306,11 +312,13 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
         <div class="meta-line">
             <span class="meta-item"><span class="meta-label">Condition ID:</span> {condition_text}</span>
             <span class="meta-item"><span class="meta-label">User:</span> {user_text}</span>
+            <span class="meta-item"><span class="meta-label">Data Source:</span> {source_text}</span>
             <span class="meta-item"><span class="meta-label">Trade Time Range:</span> {range_text}</span>
             <span class="meta-item"><span class="meta-label">Trade Count:</span> {count_text}</span>
             <span class="meta-item"><span class="meta-label">YES buy/sell:</span> {totals['yes_buy_shares']:.2f}/{totals['yes_sell_shares']:.2f} sh</span>
             <span class="meta-item"><span class="meta-label">NO buy/sell:</span> {totals['no_buy_shares']:.2f}/{totals['no_sell_shares']:.2f} sh</span>
         </div>
+        {warning_block}
         <table>
             <thead>
                 <tr>
@@ -343,7 +351,7 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 interactive_chart.py <MarketName OR JsonFile> [UserAddress]")
+        print("Usage: python3 interactive_chart.py <JsonFile OR MarketURL/Slug/ConditionID/Name> [UserAddress]")
         return
 
     arg1 = sys.argv[1]
@@ -371,12 +379,12 @@ def main() -> None:
             return
         address = sys.argv[2]
         print(f"Resolving market: {arg1}...")
-        event, market = search_market(arg1)
+        event, market, identifier = resolve_market_identifier(arg1)
         if not market:
-            print("ERROR: Market not found via Gamma API.")
+            print(f"ERROR: Market not found via Gamma API: {identifier or arg1}")
             return
         condition_id = market.get("conditionId")
-        market_title = market.get("question") or event.get("title") or "Unknown Market"
+        market_title = market.get("question") or market.get("title") or (event or {}).get("title") or condition_id
         print(f"Matched market: {market_title}")
         print(f"Target Condition ID: {condition_id}")
         raw_trades = fetch_trades(condition_id, address, page_limit=1000, verbose=True)
@@ -406,6 +414,8 @@ def main() -> None:
             f"{parsed[-1]['dt_et'].strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
         ),
         "trade_count": len(parsed),
+        "data_source": describe_trade_source(raw_trades),
+        "data_warning": trade_source_warning(raw_trades),
     }
     generate_html_table(table_rows, output_bundle.analysis_html, summary=summary, metadata=analysis_meta, totals=totals)
     print(f"Analysis table saved to {output_bundle.analysis_html}")

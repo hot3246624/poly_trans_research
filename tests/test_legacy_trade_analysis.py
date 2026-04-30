@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "legacy" / "tools"
@@ -13,8 +14,11 @@ from trade_analysis import (
     calculate_summary,
     calculate_table_metrics,
     calculate_trade_summary,
+    extract_market_identifier,
     infer_resolved_side_from_trades,
+    normalize_clob_user_trades,
     parse_trades,
+    resolve_market_identifier,
 )
 
 
@@ -65,6 +69,59 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(table_summary["locked_profit"], 1.7)
         self.assertAlmostEqual(table_summary["realized_pnl"], 0.6)
 
+    def test_table_metrics_list_only_reported_trade_side(self) -> None:
+        parsed = parse_trades(
+            [
+                {"side": "BUY", "outcome": "Up", "size": 5.52, "price": 0.99, "timestamp": 1000},
+                {"side": "SELL", "outcome": "No", "size": 2, "price": 0.25, "timestamp": 1001},
+            ]
+        )
+
+        rows = calculate_table_metrics(parsed)
+        self.assertEqual(rows[0]["yes_trade"], "BUY 5.52 @ 99.00c")
+        self.assertEqual(rows[0]["no_trade"], "")
+        self.assertEqual(rows[1]["no_trade"], "SELL 2.00 @ 25.00c")
+        self.assertEqual(rows[1]["yes_trade"], "")
+
+    def test_clob_user_trades_use_maker_order_side_for_maker_fill(self) -> None:
+        user = "0x45bc74efa620b45c02308acaecdff1f7c06f978b"
+        normalized = normalize_clob_user_trades(
+            [
+                {
+                    "id": "trade-1",
+                    "market": "0x" + "a" * 64,
+                    "asset_id": "yes-token",
+                    "side": "BUY",
+                    "outcome": "YES",
+                    "size": "10",
+                    "price": "0.84",
+                    "match_time": "1777480378",
+                    "transaction_hash": "0xabc",
+                    "trader_side": "MAKER",
+                    "maker_orders": [
+                        {
+                            "order_id": "order-1",
+                            "maker_address": user,
+                            "asset_id": "no-token",
+                            "side": "SELL",
+                            "outcome": "NO",
+                            "matched_amount": "10",
+                            "price": "0.16",
+                        }
+                    ],
+                }
+            ],
+            user_address=user,
+        )
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["side"], "SELL")
+        self.assertEqual(normalized[0]["outcome"], "NO")
+        parsed = parse_trades(normalized)
+        self.assertEqual(parsed[0]["type"], "Sell")
+        self.assertEqual(parsed[0]["side"], "Down")
+        self.assertAlmostEqual(parsed[0]["price"], 16.0)
+
     def test_position_series_includes_cumulative_sells(self) -> None:
         parsed = parse_trades(
             [
@@ -84,6 +141,54 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
 
         self.assertIsNone(inferred)
         self.assertIsNotNone(latest)
+
+    def test_extract_market_identifier_accepts_polymarket_urls(self) -> None:
+        self.assertEqual(
+            extract_market_identifier("https://polymarket.com/event/btc-updown-5m-1777439400?tid=123"),
+            "btc-updown-5m-1777439400",
+        )
+        self.assertEqual(
+            extract_market_identifier("https://polymarket.com/event/x?conditionId=0x" + "a" * 64),
+            "0x" + "a" * 64,
+        )
+
+    def test_resolve_market_identifier_accepts_condition_id_without_network(self) -> None:
+        condition_id = "0x" + "b" * 64
+        with patch("trade_analysis.requests.get") as get:
+            event, market, identifier = resolve_market_identifier(condition_id)
+
+        get.assert_not_called()
+        self.assertIsNone(event)
+        self.assertEqual(identifier, condition_id)
+        self.assertEqual(market["conditionId"], condition_id)
+
+    def test_resolve_market_identifier_fetches_exact_event_slug(self) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return [
+                    {
+                        "slug": "btc-updown-5m-1777439400",
+                        "title": "Bitcoin Up or Down",
+                        "markets": [
+                            {
+                                "slug": "btc-updown-5m-1777439400",
+                                "question": "Bitcoin Up or Down - April 29, 1:10AM-1:15AM ET",
+                                "conditionId": "0x" + "c" * 64,
+                            }
+                        ],
+                    }
+                ]
+
+        with patch("trade_analysis.requests.get", return_value=FakeResponse()) as get:
+            event, market, identifier = resolve_market_identifier("btc-updown-5m-1777439400")
+
+        get.assert_called_once()
+        self.assertEqual(identifier, "btc-updown-5m-1777439400")
+        self.assertEqual(event["slug"], "btc-updown-5m-1777439400")
+        self.assertEqual(market["conditionId"], "0x" + "c" * 64)
 
 
 if __name__ == "__main__":

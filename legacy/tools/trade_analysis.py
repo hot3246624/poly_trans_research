@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 from dataclasses import dataclass
 from datetime import timezone
+from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -13,12 +16,27 @@ from zoneinfo import ZoneInfo
 
 
 SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
+EVENTS_URL = "https://gamma-api.polymarket.com/events"
 TRADES_URL = "https://data-api.polymarket.com/trades"
+CLOB_URL = "https://clob.polymarket.com"
 PRICE_RESOLUTION_THRESHOLD = 0.5
 DEFAULT_DISPLAY_TZ = "America/New_York"
 EPSILON = 1e-9
 YES_OUTCOME_ALIASES = {"up", "yes", "y", "true", "long"}
 NO_OUTCOME_ALIASES = {"down", "no", "n", "false", "short"}
+CONDITION_ID_RE = re.compile(r"^0x[a-fA-F0-9]{16,}$")
+ENV_FILES = (Path(".env"), Path("config/.env"), Path("config/research.env"))
+API_KEY_ALIASES = ("CF_API_KEY", "POLYMARKET_BUILDER_API_KEY", "POLYMARKET_API_KEY")
+API_SECRET_ALIASES = ("CF_API_SECRET", "POLYMARKET_BUILDER_SECRET", "POLYMARKET_API_SECRET")
+API_PASSPHRASE_ALIASES = (
+    "CF_API_PASSPHRASE",
+    "POLYMARKET_BUILDER_PASSPHRASE",
+    "POLYMARKET_API_PASSPHRASE",
+)
+L1_PRIVATE_KEY_ALIASES = ("CF_L1_PRIVATE_KEY", "POLYMARKET_PRIVATE_KEY")
+FUNDER_ADDRESS_ALIASES = ("POLYMARKET_FUNDER_ADDRESS", "ETHEREUM_ADDRESS")
+SIGNATURE_TYPE_ALIASES = ("CF_SIGNATURE_TYPE", "PM_SIGNATURE_TYPE")
+QUOTE_CHARS = "'\"“”‘’`"
 
 
 @dataclass
@@ -59,6 +77,49 @@ def _as_int_timestamp(value: Any) -> int:
     return ts
 
 
+def _sanitize_env_value(value: Any) -> str:
+    txt = str(value or "").strip()
+    while len(txt) >= 2 and txt[0] in QUOTE_CHARS and txt[-1] in QUOTE_CHARS:
+        txt = txt[1:-1].strip()
+    if txt and txt[0] in QUOTE_CHARS:
+        txt = txt[1:].strip()
+    if txt and txt[-1] in QUOTE_CHARS:
+        txt = txt[:-1].strip()
+    return txt
+
+
+def _load_env() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for path in ENV_FILES:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            env[key.strip()] = _sanitize_env_value(value)
+    for key, value in os.environ.items():
+        if value:
+            env[key] = _sanitize_env_value(value)
+    return env
+
+
+def _first_env(env: dict[str, str], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = _sanitize_env_value(env.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _mask_address(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) <= 12:
+        return text
+    return f"{text[:6]}...{text[-4:]}"
+
+
 def _normalize_market_text(text: str | None) -> str:
     if not text:
         return ""
@@ -70,9 +131,44 @@ def normalize_market_text(text: str | None) -> str:
     return _normalize_market_text(text)
 
 
+def is_condition_id(value: Any) -> bool:
+    return bool(CONDITION_ID_RE.match(str(value or "").strip()))
+
+
+def extract_market_identifier(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    parsed = urlparse(text)
+    if parsed.scheme and parsed.netloc:
+        query = parse_qs(parsed.query)
+        for key in ("conditionId", "condition_id", "conditionid", "market"):
+            for candidate in query.get(key, []):
+                if is_condition_id(candidate):
+                    return candidate.strip()
+
+        segments = [unquote(part).strip() for part in parsed.path.split("/") if part.strip()]
+        for segment in reversed(segments):
+            if segment.lower() not in {"event", "events", "market", "markets"}:
+                return segment
+        return ""
+
+    return text
+
+
 def normalize_direction(value: Any) -> str:
     txt = str(value or "BUY").strip().upper()
     return "Sell" if txt == "SELL" else "Buy"
+
+
+def display_outcome(side: str) -> str:
+    return "YES" if side == "Up" else "NO"
+
+
+def trade_label(trade: dict[str, Any], *, include_side: bool = False) -> str:
+    side_part = f" {display_outcome(trade['side'])}" if include_side else ""
+    return f"{trade['type'].upper()}{side_part} {float(trade['shares']):.2f} @ {float(trade['price']):.2f}c"
 
 
 def normalize_outcome(value: Any, outcome_index: Any = None) -> str:
@@ -322,8 +418,8 @@ def calculate_table_metrics(parsed: list[dict[str, Any]]) -> list[dict[str, Any]
     for trade in parsed:
         _apply_trade(yes if trade["side"] == "Up" else no, trade)
         snap = _snapshot(yes, no, trade)
-        trade_str = f"{trade['type'].upper()} {trade['shares']:.2f} @ {trade['price']:.2f}c"
         is_yes = trade["side"] == "Up"
+        trade_str = trade_label(trade)
         diff_val = 0.0
         if snap["imbalance_shares"] > 0:
             diff_val = snap["imbalance_shares"] * snap["yes_avg_cost"]
@@ -406,6 +502,54 @@ def infer_resolved_side_from_trades(
     return inferred, latest
 
 
+def _market_title(event: dict[str, Any], market: dict[str, Any]) -> str:
+    return (market.get("question") or market.get("title") or event.get("title") or "").strip()
+
+
+def _best_market_from_event(
+    event: dict[str, Any],
+    *,
+    identifier: str,
+) -> Optional[dict[str, Any]]:
+    markets = event.get("markets") or []
+    if not markets:
+        return None
+    if len(markets) == 1:
+        return markets[0]
+
+    identifier_norm = _normalize_market_text(identifier)
+    for market in markets:
+        market_slug = str(market.get("slug") or "").strip()
+        if identifier_norm and _normalize_market_text(market_slug) == identifier_norm:
+            return market
+    return markets[0]
+
+
+def _fetch_event_by_slug(slug: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    if not slug:
+        return None, None
+    try:
+        resp = requests.get(EVENTS_URL, params={"slug": slug}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException:
+        return None, None
+
+    events = data if isinstance(data, list) else []
+    if not events:
+        return None, None
+
+    slug_norm = _normalize_market_text(slug)
+    for event in events:
+        if _normalize_market_text(event.get("slug")) == slug_norm:
+            market = _best_market_from_event(event, identifier=slug)
+            return (event, market) if market else (None, None)
+
+    event = events[0]
+    market = _best_market_from_event(event, identifier=slug)
+    return (event, market) if market else (None, None)
+
+
 def search_market(query: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
     try:
         resp = requests.get(SEARCH_URL, params={"q": query}, timeout=10)
@@ -428,7 +572,7 @@ def search_market(query: str) -> tuple[Optional[dict[str, Any]], Optional[dict[s
     for event in events:
         markets = event.get("markets") or []
         for market in markets:
-            title = (market.get("question") or event.get("title") or "").strip()
+            title = _market_title(event, market)
             if not title:
                 continue
             if fallback is None:
@@ -436,9 +580,13 @@ def search_market(query: str) -> tuple[Optional[dict[str, Any]], Optional[dict[s
 
             title_raw = title.lower()
             title_norm = _normalize_market_text(title)
+            market_slug_norm = _normalize_market_text(market.get("slug"))
+            event_slug_norm = _normalize_market_text(event.get("slug"))
             if query_raw and title_raw == query_raw:
                 return event, market
             if query_norm and title_norm == query_norm:
+                return event, market
+            if query_norm and query_norm in {market_slug_norm, event_slug_norm}:
                 return event, market
 
             score = 0
@@ -446,10 +594,18 @@ def search_market(query: str) -> tuple[Optional[dict[str, Any]], Optional[dict[s
                 score = 200
             elif query_norm and query_norm in title_norm:
                 score = 180
+            elif query_norm and market_slug_norm and query_norm in market_slug_norm:
+                score = 170
+            elif query_norm and event_slug_norm and query_norm in event_slug_norm:
+                score = 160
             else:
                 tokens = [t for t in re.split(r"[^a-z0-9]+", query_raw) if t]
                 if tokens:
-                    score = sum(1 for t in set(tokens) if t in title_raw) * 10
+                    search_space = " ".join(
+                        str(v or "").lower()
+                        for v in (title, market.get("slug"), event.get("slug"))
+                    )
+                    score = sum(1 for t in set(tokens) if t in search_space) * 10
 
             if score > best_score:
                 best_score = score
@@ -460,6 +616,22 @@ def search_market(query: str) -> tuple[Optional[dict[str, Any]], Optional[dict[s
     if fallback:
         return fallback
     return None, None
+
+
+def resolve_market_identifier(value: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], str]:
+    identifier = extract_market_identifier(value)
+    if not identifier:
+        return None, None, ""
+
+    if is_condition_id(identifier):
+        return None, {"conditionId": identifier, "question": identifier, "slug": identifier}, identifier
+
+    event, market = _fetch_event_by_slug(identifier)
+    if market:
+        return event, market, identifier
+
+    event, market = search_market(identifier)
+    return event, market, identifier
 
 
 def _requests_session() -> requests.Session:
@@ -498,6 +670,216 @@ def _addr_matches_trade(trade: dict[str, Any], address: str) -> bool:
     return False
 
 
+def with_trade_source(trades: Iterable[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for trade in trades:
+        item = dict(trade)
+        item.setdefault("source", source)
+        tagged.append(item)
+    return tagged
+
+
+def describe_trade_source(raw_data: Iterable[dict[str, Any]]) -> str:
+    sources = {str(item.get("source") or "").strip() for item in raw_data if isinstance(item, dict)}
+    if "clob_user_trades" in sources:
+        return "Authenticated CLOB user trade history"
+    if "data_api_public_trades" in sources:
+        return "Public Data API trades"
+    return "Unknown/local JSON"
+
+
+def trade_source_warning(raw_data: Iterable[dict[str, Any]]) -> str:
+    source = describe_trade_source(raw_data)
+    if source == "Public Data API trades":
+        return (
+            "Public Data API can canonicalize binary-market order direction; use matching CLOB credentials "
+            "to preserve UI actions such as SELL NO / SELL YES."
+        )
+    if source == "Unknown/local JSON":
+        return "Loaded local JSON; completeness depends on how that JSON was originally fetched."
+    return ""
+
+
+def _normalize_clob_direction(value: Any) -> str:
+    return "SELL" if str(value or "").strip().upper() == "SELL" else "BUY"
+
+
+def _normalize_clob_outcome(value: Any) -> str:
+    normalized = normalize_outcome(value)
+    return "YES" if normalized == "Up" else "NO"
+
+
+def _extract_clob_user_fills(row: dict[str, Any], user_address: str) -> list[dict[str, Any]]:
+    market = str(row.get("market") or row.get("conditionId") or row.get("condition_id") or "").strip()
+    if not market:
+        return []
+
+    trader_side = str(row.get("trader_side") or row.get("traderSide") or "").strip().upper()
+    normalized_user = str(user_address or "").strip().lower()
+    match_time = row.get("match_time") or row.get("matchTime") or row.get("timestamp") or row.get("last_update")
+    tx_hash = row.get("transaction_hash") or row.get("transactionHash") or row.get("tx_hash") or row.get("txHash")
+    trade_id = row.get("id") or row.get("trade_id") or row.get("tradeId")
+    taker_order_id = row.get("taker_order_id") or row.get("takerOrderId")
+
+    fills: list[dict[str, Any]] = []
+    maker_orders = row.get("maker_orders") if isinstance(row.get("maker_orders"), list) else []
+    if trader_side == "MAKER" and maker_orders:
+        for maker_order in maker_orders:
+            if not isinstance(maker_order, dict):
+                continue
+            owner = str(maker_order.get("maker_address") or maker_order.get("makerAddress") or "").strip().lower()
+            if normalized_user and owner and owner != normalized_user:
+                continue
+            fills.append(
+                {
+                    "conditionId": market,
+                    "asset": maker_order.get("asset_id") or maker_order.get("assetId") or row.get("asset_id") or row.get("assetId"),
+                    "side": _normalize_clob_direction(maker_order.get("side") or row.get("side")),
+                    "outcome": _normalize_clob_outcome(maker_order.get("outcome") or row.get("outcome")),
+                    "size": maker_order.get("matched_amount") or maker_order.get("matchedAmount") or maker_order.get("size") or row.get("size"),
+                    "price": maker_order.get("price") or row.get("price"),
+                    "timestamp": match_time,
+                    "transactionHash": tx_hash,
+                    "id": trade_id,
+                    "orderId": maker_order.get("order_id") or maker_order.get("orderId"),
+                    "takerOrderId": taker_order_id,
+                    "traderSide": trader_side,
+                    "proxyWallet": user_address,
+                    "source": "clob_user_trades",
+                    "rawClobTrade": row,
+                }
+            )
+
+    if fills:
+        return fills
+
+    fills.append(
+        {
+            "conditionId": market,
+            "asset": row.get("asset_id") or row.get("assetId") or row.get("asset"),
+            "side": _normalize_clob_direction(row.get("side")),
+            "outcome": _normalize_clob_outcome(row.get("outcome")),
+            "size": row.get("size"),
+            "price": row.get("price"),
+            "timestamp": match_time,
+            "transactionHash": tx_hash,
+            "id": trade_id,
+            "orderId": row.get("order_id") or row.get("orderId") or taker_order_id,
+            "takerOrderId": taker_order_id,
+            "traderSide": trader_side or "TAKER",
+            "proxyWallet": user_address,
+            "source": "clob_user_trades",
+            "rawClobTrade": row,
+        }
+    )
+    return fills
+
+
+def normalize_clob_user_trades(
+    rows: Iterable[dict[str, Any]],
+    *,
+    user_address: str,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in rows:
+        for fill in _extract_clob_user_fills(row, user_address):
+            key = (
+                fill.get("id"),
+                fill.get("orderId"),
+                fill.get("side"),
+                fill.get("outcome"),
+                str(fill.get("size")),
+                str(fill.get("price")),
+                str(fill.get("timestamp")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(fill)
+
+    normalized.sort(key=lambda item: _as_int_timestamp(item.get("timestamp")))
+    return normalized
+
+
+def _fetch_authenticated_clob_trades(
+    condition_id: str,
+    user_address: str,
+    *,
+    verbose: bool = False,
+) -> Optional[list[dict[str, Any]]]:
+    env = _load_env()
+    configured_funder = _first_env(env, FUNDER_ADDRESS_ALIASES)
+    if not configured_funder:
+        if verbose:
+            print("CLOB auth not configured; using public Data API fallback.")
+        return None
+
+    if configured_funder.lower() != str(user_address or "").strip().lower():
+        if verbose:
+            print(
+                "Configured CLOB funder "
+                f"{_mask_address(configured_funder)} does not match requested user "
+                f"{_mask_address(user_address)}; using public Data API fallback."
+            )
+        return None
+
+    api_key = _first_env(env, API_KEY_ALIASES)
+    api_secret = _first_env(env, API_SECRET_ALIASES)
+    api_passphrase = _first_env(env, API_PASSPHRASE_ALIASES)
+    l1_private_key = _first_env(env, L1_PRIVATE_KEY_ALIASES)
+    if not l1_private_key:
+        if verbose:
+            print("CLOB auth requires CF_L1_PRIVATE_KEY/POLYMARKET_PRIVATE_KEY; using public Data API fallback.")
+        return None
+
+    signature_type_value = _first_env(env, SIGNATURE_TYPE_ALIASES)
+    try:
+        signature_type = int(signature_type_value) if signature_type_value else None
+    except ValueError:
+        signature_type = None
+
+    try:
+        from py_clob_client_v2 import ApiCreds, ClobClient, TradeParams
+    except ImportError:
+        if verbose:
+            print("py_clob_client_v2 is not installed; using public Data API fallback.")
+        return None
+
+    try:
+        creds = None
+        if api_key and api_secret and api_passphrase:
+            creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
+
+        client = ClobClient(
+            CLOB_URL,
+            chain_id=137,
+            key=l1_private_key,
+            creds=creds,
+            signature_type=signature_type,
+            funder=configured_funder,
+        )
+        if creds is None:
+            if hasattr(client, "create_or_derive_api_key"):
+                creds = client.create_or_derive_api_key()
+            elif hasattr(client, "create_or_derive_api_creds"):
+                creds = client.create_or_derive_api_creds()
+            if creds is None:
+                return None
+            client.set_api_creds(creds)
+
+        clob_rows = client.get_trades(params=TradeParams(market=condition_id))
+    except Exception as exc:
+        if verbose:
+            print(f"CLOB authenticated trade fetch failed ({exc.__class__.__name__}); using public Data API fallback.")
+        return None
+
+    normalized = normalize_clob_user_trades(clob_rows, user_address=user_address)
+    if verbose:
+        print(f"Fetched {len(normalized)} user fills from authenticated CLOB trade history.")
+    return with_trade_source(normalized, "clob_user_trades")
+
+
 def fetch_trades(
     condition_id: str,
     user_address: str,
@@ -505,8 +887,12 @@ def fetch_trades(
     page_limit: int = 1000,
     verbose: bool = False,
 ) -> list[dict[str, Any]]:
+    authenticated = _fetch_authenticated_clob_trades(condition_id, user_address, verbose=verbose)
+    if authenticated is not None:
+        return authenticated
+
     if verbose:
-        print(f"Fetching trades for market={condition_id}, user={user_address}...")
+        print(f"Fetching public trades for market={condition_id}, user={user_address}...")
     session = _requests_session()
 
     def fetch_pages(base_params: dict[str, Any], label: str) -> tuple[Optional[list[dict[str, Any]]], Optional[int]]:
@@ -571,7 +957,7 @@ def fetch_trades(
         "market+user",
     )
     if trades is not None:
-        return trades
+        return with_trade_source(trades, "data_api_public_trades")
 
     if status == 408:
         print("Server timed out on market+user query. Falling back to market-only fetch and local address filtering...")
@@ -580,7 +966,7 @@ def fetch_trades(
             filtered_market = [t for t in market_trades if _addr_matches_trade(t, user_address)]
             print(f"  [market-only] Filtered {len(filtered_market)} trades for target user.")
             if filtered_market:
-                return filtered_market
+                return with_trade_source(filtered_market, "data_api_public_trades")
 
         print("Market-only path did not yield results. Falling back to user-only fetch and local market filtering...")
         user_trades, _ = fetch_pages({"takerOnly": False, "user": user_address}, "user-only")
@@ -592,7 +978,7 @@ def fetch_trades(
             if str(t.get("conditionId") or t.get("condition_id") or "").lower() == str(condition_id).lower()
         ]
         print(f"  [user-only] Filtered {len(filtered_user)} trades for target market.")
-        return filtered_user
+        return with_trade_source(filtered_user, "data_api_public_trades")
 
     return []
 

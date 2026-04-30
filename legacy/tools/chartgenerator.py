@@ -18,12 +18,14 @@ from trade_analysis import (
     calculate_position_series,
     calculate_resolution_pnl,
     calculate_trade_summary,
+    describe_trade_source,
     fetch_trades,
     format_ts,
     infer_resolved_side_from_trades,
     normalize_resolved_side,
     parse_trades,
-    search_market,
+    resolve_market_identifier,
+    trade_source_warning,
 )
 
 
@@ -100,6 +102,8 @@ def write_stats_report(
     *,
     target_market: str,
     resolved_side: str,
+    data_source: str,
+    data_warning: str,
     parsed: list[dict],
     summary: dict,
     resolution: dict,
@@ -122,6 +126,8 @@ def write_stats_report(
 
     lines = [
         f"MARKET: {target_market}",
+        f"DATA SOURCE: {data_source}",
+        f"DATA WARNING: {data_warning or 'N/A'}",
         f"RESOLUTION: {resolved_side}",
         f"TRADES: {len(parsed)}",
         f"TIME RANGE: {start_time} to {end_time}",
@@ -170,17 +176,26 @@ def write_stats_report(
 
 
 def main() -> None:
-    arg1 = sys.argv[1] if len(sys.argv) > 1 else None
-    arg2 = sys.argv[2] if len(sys.argv) > 2 else None
-
     resolved_arg = None
     json_file = None
-    if arg1 and arg1.lower().endswith(".json"):
-        json_file = arg1
-        resolved_arg = normalize_resolved_side(arg2)
+    market_query = None
+    user_address = None
+
+    args = sys.argv[1:]
+    if args and args[0].lower().endswith(".json"):
+        json_file = args[0]
+        resolved_arg = normalize_resolved_side(args[1]) if len(args) > 1 else None
+    elif args and normalize_resolved_side(args[0]):
+        resolved_arg = normalize_resolved_side(args[0])
+        if len(args) > 1 and args[1].lower().endswith(".json"):
+            json_file = args[1]
+        elif len(args) > 1:
+            market_query = args[1]
+            user_address = args[2] if len(args) > 2 else None
     else:
-        resolved_arg = normalize_resolved_side(arg1)
-        json_file = arg2
+        market_query = args[0] if args else None
+        user_address = args[1] if len(args) > 1 else None
+        resolved_arg = normalize_resolved_side(args[2]) if len(args) > 2 else None
 
     if json_file:
         try:
@@ -197,22 +212,22 @@ def main() -> None:
         market_title = raw_data[0].get("title", "Unknown Market")
         user_address = None
     else:
-        market_query = input("Enter market name to search: ").strip()
+        market_query = market_query or input("Enter market URL, slug, conditionId, or name: ").strip()
         if not market_query:
             print("Market name is required.")
             return
 
-        event, market = search_market(market_query)
+        event, market, identifier = resolve_market_identifier(market_query)
         if not market:
-            print("No market found for that query.")
+            print(f"No market found for that query: {identifier or market_query}")
             return
 
-        market_title = market.get("question") or market.get("title") or event.get("title", "Unknown Market")
+        market_title = market.get("question") or market.get("title") or (event or {}).get("title") or "Unknown Market"
         condition_id = market.get("conditionId") or ""
         print(f"Found market: {market_title}")
         print(f"Condition ID: {condition_id}")
 
-        user_address = input("Enter user address to fetch trades: ").strip()
+        user_address = user_address or input("Enter user address to fetch trades: ").strip()
         if not user_address:
             print("User address is required.")
             return
@@ -455,6 +470,8 @@ def main() -> None:
         output_bundle.report_txt,
         target_market=target_market,
         resolved_side=resolved_side,
+        data_source=describe_trade_source(raw_data),
+        data_warning=trade_source_warning(raw_data),
         parsed=parsed,
         summary=summary,
         resolution=resolution,
