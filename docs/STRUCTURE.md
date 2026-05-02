@@ -33,6 +33,7 @@
 
 - `market_meta`
 - `md_book_l1`
+- `md_book_l2`
 - `md_trades`
 - `own_order_events`
 - `own_fill_events`
@@ -47,8 +48,25 @@
 
 - 同一 UTC 日按“重建”覆盖写入，保证滚动构建幂等
 - user 分流只认显式 channel，不再依赖 `source.startswith("user")`
+- `md_book_l1` 保留 YES/NO 四价四量
+- `md_book_l2` 从 `market_ws/book` 的 `raw_l2` / snapshot / price_change raw 重建每个 YES/NO 资产 top5 bid/ask depth
+- `md_trades` 必须保持 `trade_ts_ms / taker_side / market_side / price / size`，用于 size-aware 回测
 
-## 3. User Truth Pipeline
+`md_book_l2` 是高基数 compact 表，默认不复制 `raw_json`，但仍按 top5 depth 实际变化写入，不做时间降采样。需要重新解析原始 payload 时，应回到 `data/raw`，而不是依赖 L2 表承载取证内容。
+
+`md_book_l2` 只能支持 depth-aware / maker-fill-proxy 分析，不能证明 queue priority 或真实成交。真实成交校准需要 `own_order_events` 与 `own_fill_events`。
+
+## 3. Xuan Public Truth
+
+复刻 xuan 必须采集或补拉：
+
+- `xuan_poll/xuan_trades`
+- `xuan_poll/xuan_activity`
+- `xuan_poll/xuan_poll_log`
+
+没有这些表时，结论只能是“市场侧策略形态相似”，不能说“复刻 xuan”。
+
+## 4. User Truth Pipeline
 
 开启 `CF_USER_WS_ENABLED=true` 后：
 
@@ -59,7 +77,7 @@
 5. 周期 reconcile，写 `source_kind=reconcile`
 6. `user_ws_log` 记录 `auth_success` 与 `inventory_truth_degraded`
 
-## 4. Config Layering
+## 5. Config Layering
 
 `capture-sidecar-env` 按这个顺序加载配置：
 
@@ -79,7 +97,7 @@
 
 这里的 `2` 表示滚动跟踪“当前轮 + 下一轮”。不要在长期运行里使用 `CF_MARKET_PREFIXES=*` 配 `CF_MAX_MARKETS_PER_PREFIX=0`，那会把 future rounds 一次性全部订到单个 market WS。
 
-## 5. Ops Docs
+## 6. Ops Docs
 
 - `README.md`
 - `docs/RUNBOOK.md`

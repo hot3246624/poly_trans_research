@@ -41,6 +41,39 @@ CREATE TABLE IF NOT EXISTS md_book_l1 (
     raw_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS md_book_l2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id TEXT NOT NULL,
+    recv_ms INTEGER NOT NULL,
+    recv_monotonic_ns INTEGER NOT NULL,
+    capture_seq INTEGER NOT NULL,
+    source_ts_ms INTEGER,
+    market_side TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    bid1_px REAL,
+    bid1_sz REAL,
+    bid2_px REAL,
+    bid2_sz REAL,
+    bid3_px REAL,
+    bid3_sz REAL,
+    bid4_px REAL,
+    bid4_sz REAL,
+    bid5_px REAL,
+    bid5_sz REAL,
+    ask1_px REAL,
+    ask1_sz REAL,
+    ask2_px REAL,
+    ask2_sz REAL,
+    ask3_px REAL,
+    ask3_sz REAL,
+    ask4_px REAL,
+    ask4_sz REAL,
+    ask5_px REAL,
+    ask5_sz REAL,
+    source_kind TEXT NOT NULL,
+    raw_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS md_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     condition_id TEXT NOT NULL,
@@ -202,6 +235,7 @@ CREATE TABLE IF NOT EXISTS settlement_records (
 
 CREATE INDEX IF NOT EXISTS idx_book_cond_seq ON md_book_l1(condition_id, capture_seq);
 CREATE INDEX IF NOT EXISTS idx_book_cond_recv ON md_book_l1(condition_id, recv_ms);
+CREATE INDEX IF NOT EXISTS idx_book_l2_cond_side_recv ON md_book_l2(condition_id, market_side, recv_ms);
 CREATE INDEX IF NOT EXISTS idx_trades_cond_seq ON md_trades(condition_id, capture_seq);
 CREATE INDEX IF NOT EXISTS idx_trades_cond_trade_ts ON md_trades(condition_id, trade_ts_ms);
 CREATE INDEX IF NOT EXISTS idx_trades_taker_side ON md_trades(taker_side);

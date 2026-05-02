@@ -62,6 +62,7 @@ _DEBUG_RAW_CHANNEL = "market_raw_text"
 _ALL_MARKET_PREFIXES = {"*", "all", "all-5m", "crypto-5m"}
 _MARKET_WS_ASSET_WARNING_THRESHOLD = 256
 _MARKET_WS_IDLE_RECONNECT_SEC = 15.0
+_BOOK_L2_TOP_N = 5
 
 
 @dataclass(slots=True)
@@ -135,6 +136,8 @@ class _BookSideState:
     ask_px: float = 0.0
     bid_sz: float = 0.0
     ask_sz: float = 0.0
+    bids: List[Dict[str, float]] = field(default_factory=list)
+    asks: List[Dict[str, float]] = field(default_factory=list)
     seen: bool = False
 
 
@@ -156,6 +159,8 @@ class BookAssembler:
         state.ask_px = ask_px
         state.bid_sz = bid_sz
         state.ask_sz = ask_sz
+        state.bids = _extract_top_levels(bids, is_bid=True)
+        state.asks = _extract_top_levels(asks, is_bid=False)
         state.seen = True
 
     def update_best_bid_ask(
@@ -176,6 +181,10 @@ class BookAssembler:
             state.bid_sz = max(0.0, bid_sz)
         if ask_sz is not None:
             state.ask_sz = max(0.0, ask_sz)
+        if bid_px is not None and bid_sz is not None:
+            state.bids = _replace_top_level(state.bids, price=bid_px, size=bid_sz, is_bid=True)
+        if ask_px is not None and ask_sz is not None:
+            state.asks = _replace_top_level(state.asks, price=ask_px, size=ask_sz, is_bid=False)
         state.seen = True
 
     def full_l1(self, *, source_ts_ms: Optional[int]) -> Optional[Dict[str, Any]]:
@@ -195,6 +204,10 @@ class BookAssembler:
             "no_bid_sz": self.no.bid_sz,
             "no_ask_sz": self.no.ask_sz,
             "source_ts_ms": source_ts_ms,
+            "raw_l2": {
+                "yes": {"bids": self.yes.bids, "asks": self.yes.asks},
+                "no": {"bids": self.no.bids, "asks": self.no.asks},
+            },
         }
 
 
@@ -552,6 +565,48 @@ def _extract_best_level(levels: Any, *, is_bid: bool) -> Tuple[float, float]:
     return float(best_px), float(best_sz)
 
 
+def _extract_top_levels(levels: Any, *, is_bid: bool, depth: int = _BOOK_L2_TOP_N) -> List[Dict[str, float]]:
+    if not isinstance(levels, list):
+        return []
+    parsed: Dict[float, float] = {}
+    for level in levels:
+        px: Optional[float] = None
+        sz: Optional[float] = None
+        if isinstance(level, dict):
+            px = _parse_price(level.get("price") or level.get("p") or level.get("value"))
+            sz = _parse_size(level.get("size") or level.get("s") or level.get("qty") or level.get("amount"))
+        elif isinstance(level, (list, tuple)):
+            px = _parse_price(level[0] if len(level) >= 1 else None)
+            sz = _parse_size(level[1] if len(level) >= 2 else None)
+        if px is None or sz is None or sz <= 0.0:
+            continue
+        parsed[float(px)] = float(sz)
+    return [
+        {"price": px, "size": parsed[px]}
+        for px in sorted(parsed.keys(), reverse=is_bid)[: max(1, depth)]
+    ]
+
+
+def _replace_top_level(
+    levels: List[Dict[str, float]],
+    *,
+    price: float,
+    size: float,
+    is_bid: bool,
+    depth: int = _BOOK_L2_TOP_N,
+) -> List[Dict[str, float]]:
+    merged = {float(level["price"]): float(level["size"]) for level in levels if "price" in level and "size" in level}
+    if size <= 0.0:
+        merged.pop(float(price), None)
+    else:
+        merged[float(price)] = float(size)
+    return [
+        {"price": px, "size": merged[px]}
+        for px in sorted(merged.keys(), reverse=is_bid)[: max(1, depth)]
+        if merged[px] > 0.0
+    ]
+
+
 def _iter_ws_objects(parsed: Any) -> Iterable[Dict[str, Any]]:
     if isinstance(parsed, list):
         for item in parsed:
@@ -632,6 +687,9 @@ def _handle_book_snapshot(
     if full is None:
         return out
     full["condition_id"] = condition_id
+    full["raw_asset_id"] = asset_id
+    full["raw_market_side"] = side
+    full["raw_event_type"] = "book"
     full["raw_json"] = msg
     out.append((CHANNEL_BOOK, full, condition_id))
     return out
@@ -671,6 +729,9 @@ def _handle_price_change(
         if full is None:
             continue
         full["condition_id"] = condition_id
+        full["raw_asset_id"] = asset_id
+        full["raw_market_side"] = side
+        full["raw_event_type"] = "price_change"
         full["raw_json"] = change
         out.append((CHANNEL_BOOK, full, condition_id))
 
@@ -707,6 +768,9 @@ def _handle_best_bid_ask(
     if full is None:
         return out
     full["condition_id"] = condition_id
+    full["raw_asset_id"] = asset_id
+    full["raw_market_side"] = side
+    full["raw_event_type"] = "best_bid_ask"
     full["raw_json"] = msg
     out.append((CHANNEL_BOOK, full, condition_id))
     return out

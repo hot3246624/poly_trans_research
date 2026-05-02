@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 import heapq
+import json
 import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from ..capture.envelope import RawEnvelope
 from ..constants import (
@@ -33,6 +34,8 @@ from .normalize import (
     dedup_order_key,
     dedup_trade_key,
     normalize_book_row,
+    normalize_direction,
+    normalize_side,
     normalize_fill_events,
     normalize_inventory_event,
     normalize_market_meta_payload,
@@ -49,6 +52,87 @@ from .schema import init_schema
 LOG = logging.getLogger("completion_first_data.replay.builder")
 PROGRESS_LOG_EVERY_RECORDS = 250_000
 PROGRESS_LOG_MIN_INTERVAL_SEC = 15.0
+BOOK_L2_TOP_N = 5
+# L2 is a high-cardinality structured replay table. Raw book payloads remain
+# available in data/raw; duplicating them per L2 snapshot makes SQLite larger
+# than the compressed raw source and is not useful for backtests.
+STORE_BOOK_L2_RAW_JSON = False
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_levels(levels: Any, *, is_bid: bool) -> Dict[float, float]:
+    out: Dict[float, float] = {}
+    if not isinstance(levels, list):
+        return out
+    for level in levels:
+        px: Optional[float] = None
+        sz: Optional[float] = None
+        if isinstance(level, dict):
+            px = _as_float(level.get("price") or level.get("p") or level.get("value"))
+            sz = _as_float(level.get("size") or level.get("s") or level.get("qty") or level.get("amount"))
+        elif isinstance(level, (list, tuple)):
+            px = _as_float(level[0] if len(level) >= 1 else None)
+            sz = _as_float(level[1] if len(level) >= 2 else None)
+        if px is None:
+            continue
+        out[float(px)] = max(0.0, float(sz or 0.0))
+    return out
+
+
+@dataclasses.dataclass(slots=True)
+class _DepthSideState:
+    bids: Dict[float, float] = dataclasses.field(default_factory=dict)
+    asks: Dict[float, float] = dataclasses.field(default_factory=dict)
+
+    def replace_snapshot(self, *, bids: Any, asks: Any) -> None:
+        self.bids = {px: sz for px, sz in _extract_levels(bids, is_bid=True).items() if sz > 0.0}
+        self.asks = {px: sz for px, sz in _extract_levels(asks, is_bid=False).items() if sz > 0.0}
+
+    def update_level(self, *, order_side: str, price: float, size: float) -> None:
+        levels = self.bids if order_side == "BUY" else self.asks
+        if size <= 0.0:
+            levels.pop(price, None)
+        else:
+            levels[price] = size
+
+    def top(self, *, order_side: str, depth: int = BOOK_L2_TOP_N) -> List[Tuple[float, float]]:
+        levels = self.bids if order_side == "BUY" else self.asks
+        reverse = order_side == "BUY"
+        return [(px, levels[px]) for px in sorted(levels.keys(), reverse=reverse)[:depth] if levels[px] > 0.0]
+
+
+def _flatten_levels(levels: List[Tuple[float, float]], depth: int = BOOK_L2_TOP_N) -> List[Optional[float]]:
+    out: List[Optional[float]] = []
+    for idx in range(depth):
+        if idx < len(levels):
+            out.extend([levels[idx][0], levels[idx][1]])
+        else:
+            out.extend([None, None])
+    return out
+
+
+def _depth_signature(side_state: _DepthSideState) -> Tuple[Tuple[float, float], ...]:
+    return tuple(side_state.top(order_side="BUY") + side_state.top(order_side="SELL"))
 
 
 @dataclasses.dataclass(slots=True)
@@ -57,6 +141,7 @@ class BuildStats:
     raw_records: int = 0
     market_meta_rows: int = 0
     md_book_rows: int = 0
+    md_book_l2_rows: int = 0
     md_trades_rows: int = 0
     xuan_trades_rows: int = 0
     xuan_activity_rows: int = 0
@@ -105,6 +190,106 @@ class ReplayBuilder:
                 continue
             heapq.heappush(heap, (self._sort_key(next_env), file_idx, next_env, iterator))
 
+    @staticmethod
+    def _infer_l2_market_side(
+        *,
+        condition_id: str,
+        payload: Dict[str, Any],
+        raw: Dict[str, Any],
+        asset_side: Dict[Tuple[str, str], str],
+    ) -> Optional[str]:
+        explicit = normalize_side(
+            payload.get("raw_market_side")
+            or payload.get("market_side")
+            or raw.get("market_side")
+            or raw.get("outcome")
+        )
+        if explicit:
+            return explicit
+        asset_id = str(raw.get("asset_id") or raw.get("assetId") or payload.get("asset_id") or "").strip()
+        if asset_id:
+            return asset_side.get((condition_id, asset_id))
+        return None
+
+    @staticmethod
+    def _update_l2_state(
+        *,
+        condition_id: str,
+        payload: Dict[str, Any],
+        asset_side: Dict[Tuple[str, str], str],
+        state: Dict[Tuple[str, str], _DepthSideState],
+    ) -> List[Tuple[str, _DepthSideState]]:
+        raw = _json_dict(payload.get("raw_json")) or payload
+        raw_l2 = payload.get("raw_l2")
+        if isinstance(raw_l2, dict):
+            updates: List[Tuple[str, _DepthSideState]] = []
+            for raw_key, market_side in (("yes", "YES"), ("no", "NO")):
+                side_payload = raw_l2.get(raw_key)
+                if not isinstance(side_payload, dict):
+                    continue
+                side_state = state.setdefault((condition_id, market_side), _DepthSideState())
+                side_state.replace_snapshot(bids=side_payload.get("bids"), asks=side_payload.get("asks"))
+                updates.append((market_side, side_state))
+            if updates:
+                return updates
+
+        market_side = ReplayBuilder._infer_l2_market_side(
+            condition_id=condition_id,
+            payload=payload,
+            raw=raw,
+            asset_side=asset_side,
+        )
+        if market_side not in {"YES", "NO"}:
+            return []
+
+        side_state = state.setdefault((condition_id, market_side), _DepthSideState())
+        if isinstance(raw.get("bids"), list) or isinstance(raw.get("asks"), list):
+            side_state.replace_snapshot(bids=raw.get("bids"), asks=raw.get("asks"))
+            return [(market_side, side_state)]
+
+        order_side = normalize_direction(raw.get("side") or raw.get("book_side") or raw.get("order_side"))
+        price = _as_float(raw.get("price"))
+        size = _as_float(raw.get("size") or raw.get("amount"))
+        if order_side in {"BUY", "SELL"} and price is not None and size is not None:
+            side_state.update_level(order_side=order_side, price=float(price), size=max(0.0, float(size)))
+            return [(market_side, side_state)]
+        return []
+
+    @staticmethod
+    def _insert_l2_snapshot(
+        cur: sqlite3.Cursor,
+        *,
+        rec: Dict[str, Any],
+        market_side: str,
+        side_state: _DepthSideState,
+    ) -> None:
+        bids = side_state.top(order_side="BUY")
+        asks = side_state.top(order_side="SELL")
+        cur.execute(
+            """
+            INSERT INTO md_book_l2 (
+                condition_id, recv_ms, recv_monotonic_ns, capture_seq, source_ts_ms,
+                market_side, depth,
+                bid1_px, bid1_sz, bid2_px, bid2_sz, bid3_px, bid3_sz, bid4_px, bid4_sz, bid5_px, bid5_sz,
+                ask1_px, ask1_sz, ask2_px, ask2_sz, ask3_px, ask3_sz, ask4_px, ask4_sz, ask5_px, ask5_sz,
+                source_kind, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rec["condition_id"],
+                rec["recv_ms"],
+                rec["recv_monotonic_ns"],
+                rec["capture_seq"],
+                rec["source_ts_ms"],
+                market_side,
+                BOOK_L2_TOP_N,
+                *_flatten_levels(bids),
+                *_flatten_levels(asks),
+                rec["source_kind"],
+                rec["raw_json"] if STORE_BOOK_L2_RAW_JSON else None,
+            ),
+        )
+
     def build(self) -> BuildStats:
         stats = BuildStats()
         files = self._source_files()
@@ -126,6 +311,9 @@ class ReplayBuilder:
         init_schema(conn)
 
         book_last: Dict[str, tuple] = {}
+        book_l2_state: Dict[Tuple[str, str], _DepthSideState] = {}
+        book_l2_last: Dict[Tuple[str, str], Tuple[Tuple[float, float], ...]] = {}
+        asset_side: Dict[Tuple[str, str], str] = {}
         trade_seen: set = set()
         xuan_trade_seen: set = set()
         xuan_activity_seen: set = set()
@@ -143,10 +331,11 @@ class ReplayBuilder:
                 now = time.monotonic()
                 if now - last_progress_log >= PROGRESS_LOG_MIN_INTERVAL_SEC:
                     LOG.info(
-                        "replay build progress: day=%s raw_records=%d md_book_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d current_capture_seq=%d",
+                        "replay build progress: day=%s raw_records=%d md_book_rows=%d md_book_l2_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d current_capture_seq=%d",
                         self.replay_db_path.parent.name,
                         stats.raw_records,
                         stats.md_book_rows,
+                        stats.md_book_l2_rows,
                         stats.md_trades_rows,
                         stats.market_meta_rows,
                         stats.settlement_rows,
@@ -194,6 +383,10 @@ class ReplayBuilder:
                         ),
                     )
                     stats.market_meta_rows += 1
+                    if rec.get("yes_token_id"):
+                        asset_side[(rec["condition_id"], str(rec["yes_token_id"]))] = "YES"
+                    if rec.get("no_token_id"):
+                        asset_side[(rec["condition_id"], str(rec["no_token_id"]))] = "NO"
                 continue
 
             # settlement
@@ -398,6 +591,25 @@ class ReplayBuilder:
             if channel in {CHANNEL_BOOK, CHANNEL_BBA}:
                 rec = normalize_book_row(env)
                 if rec:
+                    l2_updates = self._update_l2_state(
+                        condition_id=rec["condition_id"],
+                        payload=env.payload_json,
+                        asset_side=asset_side,
+                        state=book_l2_state,
+                    )
+                    for market_side, side_state in l2_updates:
+                        l2_key = (rec["condition_id"], market_side)
+                        l2_sig = _depth_signature(side_state)
+                        if book_l2_last.get(l2_key) != l2_sig:
+                            book_l2_last[l2_key] = l2_sig
+                            self._insert_l2_snapshot(
+                                cur,
+                                rec=rec,
+                                market_side=market_side,
+                                side_state=side_state,
+                            )
+                            stats.md_book_l2_rows += 1
+
                     key = dedup_book_key(rec)
                     cond = rec["condition_id"]
                     if book_last.get(cond) == key:
@@ -568,10 +780,11 @@ class ReplayBuilder:
         conn.commit()
         conn.close()
         LOG.info(
-            "replay build finished: day=%s raw_records=%d md_book_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d elapsed_sec=%.1f",
+            "replay build finished: day=%s raw_records=%d md_book_rows=%d md_book_l2_rows=%d md_trades_rows=%d market_meta_rows=%d settlement_rows=%d dedup_skips=%d elapsed_sec=%.1f",
             self.replay_db_path.parent.name,
             stats.raw_records,
             stats.md_book_rows,
+            stats.md_book_l2_rows,
             stats.md_trades_rows,
             stats.market_meta_rows,
             stats.settlement_rows,

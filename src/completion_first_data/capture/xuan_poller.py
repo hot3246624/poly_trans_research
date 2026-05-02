@@ -88,13 +88,14 @@ def _iter_data_api_rows(
     include_taker_only_false: bool = False,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    # `before` is kept as a best-effort pagination hint per API guidance.
-    before_cursor_s: Optional[int] = int(last_seen_ts_ms / 1000) if last_seen_ts_ms else None
+    # Start from the newest page every poll. `before` is only used after the
+    # first page to walk backwards; using last_seen as the initial `before`
+    # would skip newer rows entirely.
+    before_cursor_s: Optional[int] = None
 
     for page in range(max_pages):
         params: Dict[str, Any] = {
             "limit": page_limit,
-            "offset": page * page_limit,
             "user": user,
         }
         if include_taker_only_false:
@@ -116,7 +117,7 @@ def _iter_data_api_rows(
         if isinstance(payload, list):
             rows = payload
         elif isinstance(payload, dict):
-            rows = payload.get("trades") or payload.get("history") or []
+            rows = payload.get("trades") or payload.get("history") or payload.get("activity") or payload.get("data") or []
         else:
             rows = []
 

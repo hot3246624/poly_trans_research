@@ -38,6 +38,7 @@ class AuditConfig:
     raw_trade_max_records: int = 1_000_000
     raw_book_max_records: int = 250_000
     taker_side_null_max_ratio: float = 0.05
+    trusted_start_ms: Optional[int] = None
 
 
 def _pct(num: int, den: int) -> float:
@@ -69,6 +70,10 @@ def _one(conn: sqlite3.Connection, sql: str, params: Tuple[Any, ...] = ()) -> An
 
 def _table_count(conn: sqlite3.Connection, table: str) -> int:
     return int(_one(conn, f"SELECT COUNT(*) FROM {table}") or 0)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(_one(conn, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)))
 
 
 def _slug_epoch(slug: str) -> Optional[int]:
@@ -143,6 +148,20 @@ def _audit_schema_core(conn: sqlite3.Connection, db_path: Path, min_db_bytes: in
         """
     ).fetchone()
     settlement_rows = _table_count(conn, "settlement_records")
+    book_l2_rows = _table_count(conn, "md_book_l2") if _table_exists(conn, "md_book_l2") else 0
+    book_l2_side_rows: Dict[str, int] = {}
+    if book_l2_rows > 0:
+        rows = conn.execute("SELECT market_side, COUNT(*) AS n FROM md_book_l2 GROUP BY market_side").fetchall()
+        book_l2_side_rows = {str(r["market_side"]): int(r["n"]) for r in rows}
+    bounds = conn.execute(
+        """
+        SELECT
+          (SELECT MIN(recv_ms) FROM md_book_l1) AS min_book_recv_ms,
+          (SELECT MAX(recv_ms) FROM md_book_l1) AS max_book_recv_ms,
+          (SELECT MIN(trade_ts_ms) FROM md_trades WHERE trade_ts_ms IS NOT NULL) AS min_trade_ts_ms,
+          (SELECT MAX(trade_ts_ms) FROM md_trades WHERE trade_ts_ms IS NOT NULL) AS max_trade_ts_ms
+        """
+    ).fetchone()
 
     return {
         "db_size_bytes": db_size,
@@ -150,6 +169,8 @@ def _audit_schema_core(conn: sqlite3.Connection, db_path: Path, min_db_bytes: in
         "market_meta_rows": _table_count(conn, "market_meta"),
         "symbol_counts": symbol_counts,
         "md_book_l1_rows": book_rows,
+        "md_book_l2_rows": book_l2_rows,
+        "md_book_l2_side_rows": book_l2_side_rows,
         "md_trades_rows": trade_rows,
         "book_size_nulls": size_nulls,
         "book_size_null_rates": {k: _pct(v, book_rows) for k, v in size_nulls.items()},
@@ -162,17 +183,29 @@ def _audit_schema_core(conn: sqlite3.Connection, db_path: Path, min_db_bytes: in
         "avg_trade_latency_ms": round(float(latency["avg_latency"] or 0.0), 4) if latency else 0.0,
         "max_abs_trade_latency_ms": int(latency["max_abs_latency"] or 0) if latency else 0,
         "settlement_rows": settlement_rows,
+        "capture_bounds": {
+            "min_book_recv_ms": int(bounds["min_book_recv_ms"] or 0) if bounds else 0,
+            "max_book_recv_ms": int(bounds["max_book_recv_ms"] or 0) if bounds else 0,
+            "min_trade_ts_ms": int(bounds["min_trade_ts_ms"] or 0) if bounds else 0,
+            "max_trade_ts_ms": int(bounds["max_trade_ts_ms"] or 0) if bounds else 0,
+        },
     }
 
 
-def _audit_btc_continuity(conn: sqlite3.Connection) -> Dict[str, Any]:
+def _audit_btc_continuity(conn: sqlite3.Connection, *, trusted_start_ms: Optional[int] = None) -> Dict[str, Any]:
+    where = "WHERE symbol='BTC'"
+    params: Tuple[Any, ...] = ()
+    if trusted_start_ms is not None:
+        where += " AND end_ms > ?"
+        params = (trusted_start_ms,)
     rows = conn.execute(
-        """
+        f"""
         SELECT condition_id, slug, start_ms, end_ms
         FROM market_meta
-        WHERE symbol='BTC'
+        {where}
         ORDER BY start_ms
-        """
+        """,
+        params,
     ).fetchall()
     gaps: List[Dict[str, Any]] = []
     planned_gaps: List[Dict[str, Any]] = []
@@ -207,19 +240,25 @@ def _audit_btc_continuity(conn: sqlite3.Connection) -> Dict[str, Any]:
     }
 
 
-def _audit_btc_book_coverage(conn: sqlite3.Connection) -> Dict[str, Any]:
+def _audit_btc_book_coverage(conn: sqlite3.Connection, *, trusted_start_ms: Optional[int] = None) -> Dict[str, Any]:
+    where = "WHERE m.symbol='BTC'"
+    params: Tuple[Any, ...] = ()
+    if trusted_start_ms is not None:
+        where += " AND m.end_ms > ?"
+        params = (trusted_start_ms,)
     rows = conn.execute(
-        """
+        f"""
         SELECT m.condition_id, m.slug, m.start_ms, m.end_ms,
                MIN(b.recv_ms) AS first_book_ms,
                MAX(b.recv_ms) AS last_book_ms,
                COUNT(b.id) AS book_rows
         FROM market_meta m
         LEFT JOIN md_book_l1 b ON b.condition_id=m.condition_id
-        WHERE m.symbol='BTC'
+        {where}
         GROUP BY m.condition_id
         ORDER BY m.start_ms
-        """
+        """,
+        params,
     ).fetchall()
     if not rows:
         return {"btc_book_coverage_rows": 0, "missing_book_rounds": 0, "edge_warning_rounds": 0, "warnings": []}
@@ -282,6 +321,12 @@ def _audit_settlement(conn: sqlite3.Connection) -> Dict[str, Any]:
         "btc_settlement_rows": settled,
         "btc_settlement_coverage": _pct(settled, ended),
     }
+
+
+def _day_bounds_ms(day: str) -> Tuple[int, int]:
+    start = dt.datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+    end = start + dt.timedelta(days=1)
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
 def _audit_raw_replay_sample(
@@ -352,9 +397,18 @@ def _audit_raw_replay_sample(
     }
 
 
-def _market_feature_probe(conn: sqlite3.Connection) -> Dict[str, Any]:
+def _market_feature_probe(conn: sqlite3.Connection, *, trusted_start_ms: Optional[int] = None) -> Dict[str, Any]:
+    book_filter = ""
+    trade_filter = ""
+    book_params: Tuple[Any, ...] = ()
+    trade_params: Tuple[Any, ...] = ()
+    if trusted_start_ms is not None:
+        book_filter = "AND b.recv_ms >= ?"
+        trade_filter = "AND t.trade_ts_ms >= ?"
+        book_params = (trusted_start_ms,)
+        trade_params = (trusted_start_ms,)
     spread = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n,
                AVG(yes_ask_px - yes_bid_px) AS avg_yes_spread,
                AVG(no_ask_px - no_bid_px) AS avg_no_spread,
@@ -365,16 +419,20 @@ def _market_feature_probe(conn: sqlite3.Connection) -> Dict[str, Any]:
         FROM md_book_l1 b
         JOIN market_meta m ON m.condition_id=b.condition_id
         WHERE m.symbol='BTC'
-        """
+        {book_filter}
+        """,
+        book_params,
     ).fetchone()
     trades = conn.execute(
-        """
+        f"""
         SELECT t.condition_id, t.trade_ts_ms, t.market_side
         FROM md_trades t
         JOIN market_meta m ON m.condition_id=t.condition_id
         WHERE m.symbol='BTC' AND t.trade_ts_ms IS NOT NULL AND t.market_side IS NOT NULL
+        {trade_filter}
         ORDER BY t.condition_id, t.trade_ts_ms, t.id
-        """
+        """,
+        trade_params,
     ).fetchall()
     by_condition: Dict[str, List[sqlite3.Row]] = {}
     for row in trades:
@@ -427,6 +485,10 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
         "own_truth_audit": "N/A",
         "db_stability": "warning",
         "db_stability_reason": "builder currently rebuilds target sqlite in place; tmp sqlite atomic rename is not implemented",
+        "trusted_start_ms": config.trusted_start_ms,
+        "planned_outage_windows_ms": [
+            {"start_ms": start, "end_ms": end} for start, end in PLANNED_OUTAGE_WINDOWS_MS
+        ],
     }
 
     if not db_path.exists():
@@ -441,11 +503,18 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
     try:
         conn = _connect_ro(db_path)
         schema_core = _audit_schema_core(conn, db_path, config.min_db_bytes)
-        btc_continuity = _audit_btc_continuity(conn)
-        btc_book_coverage = _audit_btc_book_coverage(conn)
+        day_start_ms, day_end_ms = _day_bounds_ms(day)
+        btc_continuity = _audit_btc_continuity(conn, trusted_start_ms=config.trusted_start_ms)
+        btc_book_coverage = _audit_btc_book_coverage(conn, trusted_start_ms=config.trusted_start_ms)
         settlement = _audit_settlement(conn)
         btc_rows = conn.execute(
-            "SELECT condition_id, slug, start_ms, end_ms FROM market_meta WHERE symbol='BTC' ORDER BY start_ms"
+            """
+            SELECT condition_id, slug, start_ms, end_ms
+            FROM market_meta
+            WHERE symbol='BTC' AND (? IS NULL OR end_ms > ?)
+            ORDER BY start_ms
+            """,
+            (config.trusted_start_ms, config.trusted_start_ms),
         ).fetchall()
         sample_condition_ids = _select_btc_samples(btc_rows)
         raw_sample = _audit_raw_replay_sample(
@@ -456,7 +525,7 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
             max_trade_records=config.raw_trade_max_records,
             max_book_records=config.raw_book_max_records,
         )
-        feature_probe = _market_feature_probe(conn)
+        feature_probe = _market_feature_probe(conn, trusted_start_ms=config.trusted_start_ms)
     except sqlite3.Error as exc:
         base["market_side_audit"] = "fail"
         base["errors"] = [f"sqlite audit failed: {exc}"]
@@ -492,6 +561,8 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
 
     if any(v != 0 for v in schema_core["book_price_nulls"].values()):
         warnings.append("book_price_nulls_present")
+    if schema_core["md_book_l2_rows"] <= 0:
+        warnings.append("md_book_l2_empty")
     if abs(schema_core["avg_trade_latency_ms"]) > 60_000 or schema_core["max_abs_trade_latency_ms"] > 600_000:
         warnings.append("trade_latency_large")
     if settlement["btc_settlement_coverage"] < 0.8:
@@ -519,6 +590,10 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
                 "price_nulls": schema_core["book_price_nulls"],
                 "price_null_rates": schema_core["book_price_null_rates"],
             },
+            "md_book_l2": {
+                "rows": schema_core["md_book_l2_rows"],
+                "side_rows": schema_core["md_book_l2_side_rows"],
+            },
             "md_trades": {
                 "rows": schema_core["md_trades_rows"],
                 "trade_ts_ms_null_rows": schema_core["trade_ts_ms_null_rows"],
@@ -529,6 +604,15 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
                 "max_abs_trade_latency_ms": schema_core["max_abs_trade_latency_ms"],
             },
             "settlement_records": settlement,
+            "capture_bounds": {
+                **schema_core["capture_bounds"],
+                "day_start_ms": day_start_ms,
+                "day_end_ms": day_end_ms,
+                "partial_day": (
+                    schema_core["capture_bounds"]["max_book_recv_ms"] > 0
+                    and schema_core["capture_bounds"]["max_book_recv_ms"] < day_end_ms - 60_000
+                ),
+            },
             "btc_continuity": btc_continuity,
             "btc_book_coverage": btc_book_coverage,
             "raw_replay_sample_check": raw_sample,
@@ -546,6 +630,10 @@ def run_market_replay_audit(config: AuditConfig) -> Dict[str, Any]:
     return {
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "days": days,
+        "trusted_start_ms": config.trusted_start_ms,
+        "planned_outage_windows_ms": [
+            {"start_ms": start, "end_ms": end} for start, end in PLANNED_OUTAGE_WINDOWS_MS
+        ],
         "market_side_audit": _status(has_fail, has_warning),
         "xuan_truth_audit": "N/A",
         "own_truth_audit": "N/A",
@@ -579,6 +667,7 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
         "# Replay Audit Report",
         "",
         f"- generated_at_utc: `{report.get('generated_at_utc')}`",
+        f"- trusted_start_ms: `{report.get('trusted_start_ms')}`",
         f"- market_side_audit: `{report.get('market_side_audit')}`",
         f"- xuan_truth_audit: `{report.get('xuan_truth_audit')}`",
         f"- own_truth_audit: `{report.get('own_truth_audit')}`",
@@ -603,8 +692,11 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
                 f"- failures: `{', '.join(day.get('failures', [])) or 'none'}`",
                 f"- warnings: `{', '.join(day.get('warnings', [])) or 'none'}`",
                 f"- md_book_l1_rows: `{day.get('md_book_l1', {}).get('rows', 0)}`",
+                f"- md_book_l2_rows: `{day.get('md_book_l2', {}).get('rows', 0)}`",
                 f"- md_trades_rows: `{day.get('md_trades', {}).get('rows', 0)}`",
                 f"- taker_side_null_rate: `{day.get('md_trades', {}).get('taker_side_null_rate', 0)}`",
+                f"- capture_max_book_recv_ms: `{day.get('capture_bounds', {}).get('max_book_recv_ms', 0)}`",
+                f"- partial_day: `{str(day.get('capture_bounds', {}).get('partial_day', False)).lower()}`",
                 f"- btc_rounds: `{day.get('btc_continuity', {}).get('btc_rounds', 0)}`",
                 f"- nonplanned_btc_gaps: `{day.get('btc_continuity', {}).get('nonplanned_gap_count', 0)}`",
                 f"- market_feature_probe_btc_trades: `{day.get('market_feature_probe', {}).get('btc_trade_rows', 0)}`",

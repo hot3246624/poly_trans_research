@@ -15,6 +15,7 @@ RAW_ENVELOPE_FIELDS = (
 REPLAY_TABLES = (
     "market_meta",
     "md_book_l1",
+    "md_book_l2",
     "md_trades",
     "xuan_trades",
     "xuan_activity",

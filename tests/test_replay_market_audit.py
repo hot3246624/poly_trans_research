@@ -46,6 +46,21 @@ def _create_db(replay_root: Path, day: str, starts_ms: list[int]) -> Path:
                 """,
                 (cid, start_ms + 1_000, capture_seq, start_ms + 1_000),
             )
+            cur.execute(
+                """
+                INSERT INTO md_book_l2 (
+                    condition_id, recv_ms, recv_monotonic_ns, capture_seq, source_ts_ms,
+                    market_side, depth,
+                    bid1_px, bid1_sz, bid2_px, bid2_sz, bid3_px, bid3_sz, bid4_px, bid4_sz, bid5_px, bid5_sz,
+                    ask1_px, ask1_sz, ask2_px, ask2_sz, ask3_px, ask3_sz, ask4_px, ask4_sz, ask5_px, ask5_sz,
+                    source_kind, raw_json
+                ) VALUES (?, ?, 1, ?, ?, 'YES', 5,
+                    0.49, 10, 0.48, 8, NULL, NULL, NULL, NULL, NULL, NULL,
+                    0.51, 11, 0.52, 9, NULL, NULL, NULL, NULL, NULL, NULL,
+                    'market_ws', '{}')
+                """,
+                (cid, start_ms + 1_000, capture_seq, start_ms + 1_000),
+            )
             capture_seq += 1
             cur.execute(
                 """

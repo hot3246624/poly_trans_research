@@ -652,6 +652,7 @@ def _write_xuan_backfill_rows(
     endpoint: str,
     rows: List[Dict[str, Any]],
     poll_ts_ms: int,
+    log_recv_ms: Optional[int] = None,
 ) -> Optional[int]:
     max_ts: Optional[int] = None
     for row in sorted(rows, key=lambda r: _row_ts_ms(r) or 0):
@@ -726,9 +727,481 @@ def _write_xuan_backfill_rows(
             "error": None,
             "source_quality": "data_api_backfill",
         },
-        recv_unix_ms=poll_ts_ms,
+        recv_unix_ms=log_recv_ms or poll_ts_ms,
     )
     return max_ts
+
+
+def _fetch_xuan_market_rows(
+    *,
+    session: requests.Session,
+    url: str,
+    user: str,
+    condition_id: str,
+    page_limit: int,
+    max_pages: int,
+    include_taker_only_false: bool,
+    timeout_sec: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    scanned = 0
+    oldest_seen: Optional[int] = None
+    newest_seen: Optional[int] = None
+    page_cap_hit = False
+
+    for page in range(max(1, max_pages)):
+        params: Dict[str, Any] = {
+            "limit": max(1, page_limit),
+            "offset": page * max(1, page_limit),
+            "user": user,
+            "market": condition_id,
+        }
+        if include_taker_only_false:
+            params["takerOnly"] = "false"
+
+        resp = session.get(url, params=params, timeout=max(1, timeout_sec))
+        resp.raise_for_status()
+        page_rows = _data_api_rows(resp.json())
+        if not page_rows:
+            break
+
+        for row in page_rows:
+            scanned += 1
+            ts_ms = _row_ts_ms(row)
+            if ts_ms is not None:
+                oldest_seen = ts_ms if oldest_seen is None else min(oldest_seen, ts_ms)
+                newest_seen = ts_ms if newest_seen is None else max(newest_seen, ts_ms)
+            rows.append(row)
+
+        if len(page_rows) < max(1, page_limit):
+            break
+        if page == max(1, max_pages) - 1:
+            page_cap_hit = True
+
+    return rows, {
+        "rows_scanned": scanned,
+        "rows": len(rows),
+        "oldest_seen_ms": oldest_seen,
+        "newest_seen_ms": newest_seen,
+        "page_cap_hit": page_cap_hit,
+    }
+
+
+def _load_xuan_backfill_markets(
+    *,
+    replay_root: str | Path,
+    days: Iterable[str],
+    symbols: Iterable[str],
+    start_ms: Optional[int] = None,
+    end_ms: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    allowed_symbols = {s.strip().upper() for s in symbols if s.strip()}
+    markets: Dict[str, Dict[str, Any]] = {}
+    for day in days:
+        db = _replay_db_path(replay_root, day)
+        if not db.exists():
+            LOG.warning("xuan market backfill skipping missing replay db: %s", db)
+            continue
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            clauses = ["condition_id IS NOT NULL", "condition_id != ''"]
+            params: List[Any] = []
+            if allowed_symbols:
+                placeholders = ",".join("?" for _ in allowed_symbols)
+                clauses.append(f"upper(symbol) IN ({placeholders})")
+                params.extend(sorted(allowed_symbols))
+            if start_ms is not None:
+                clauses.append("end_ms > ?")
+                params.append(start_ms)
+            if end_ms is not None:
+                clauses.append("start_ms < ?")
+                params.append(end_ms)
+            sql = (
+                "SELECT condition_id, slug, symbol, start_ms, end_ms "
+                "FROM market_meta WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY start_ms, symbol, slug"
+            )
+            for condition_id, slug, symbol, m_start_ms, m_end_ms in conn.execute(sql, params):
+                key = str(condition_id)
+                if key not in markets:
+                    markets[key] = {
+                        "condition_id": key,
+                        "slug": slug,
+                        "symbol": symbol,
+                        "start_ms": int(m_start_ms),
+                        "end_ms": int(m_end_ms),
+                    }
+        finally:
+            conn.close()
+    return sorted(markets.values(), key=lambda m: (m["start_ms"], m["symbol"], m["slug"]))
+
+
+def cmd_backfill_xuan_market_public(args: argparse.Namespace) -> int:
+    days = [d.strip() for d in args.days.split(",") if d.strip()]
+    if not days:
+        raise SystemExit("--days is required")
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    start_ms = int(_parse_utc_iso(args.start).timestamp() * 1000) if args.start else None
+    end_ms = int(_parse_utc_iso(args.end).timestamp() * 1000) if args.end else None
+    if start_ms is not None and end_ms is not None and end_ms <= start_ms:
+        raise SystemExit("--end must be later than --start")
+
+    markets = _load_xuan_backfill_markets(
+        replay_root=args.replay_root,
+        days=days,
+        symbols=symbols,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    if args.market_limit and args.market_limit > 0:
+        markets = markets[: args.market_limit]
+
+    session = requests.Session()
+    raw_store: Optional[RawCaptureStore] = None if args.dry_run else RawCaptureStore(args.raw_root)
+    totals = {
+        "markets": len(markets),
+        "trade_rows": 0,
+        "activity_rows": 0,
+        "trade_page_cap_hits": 0,
+        "activity_page_cap_hits": 0,
+    }
+    samples: List[Dict[str, Any]] = []
+    poll_ts_ms = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+
+    try:
+        for idx, market in enumerate(markets, start=1):
+            condition_id = market["condition_id"]
+            trade_rows, trade_summary = _fetch_xuan_market_rows(
+                session=session,
+                url=POLYMARKET_DATA_TRADES_URL,
+                user=args.user,
+                condition_id=condition_id,
+                page_limit=args.page_limit,
+                max_pages=args.max_pages,
+                include_taker_only_false=True,
+                timeout_sec=args.timeout_sec,
+            )
+            activity_rows, activity_summary = _fetch_xuan_market_rows(
+                session=session,
+                url=POLYMARKET_DATA_ACTIVITY_URL,
+                user=args.user,
+                condition_id=condition_id,
+                page_limit=args.page_limit,
+                max_pages=args.max_pages,
+                include_taker_only_false=False,
+                timeout_sec=args.timeout_sec,
+            )
+
+            totals["trade_rows"] += int(trade_summary["rows"])
+            totals["activity_rows"] += int(activity_summary["rows"])
+            totals["trade_page_cap_hits"] += 1 if trade_summary["page_cap_hit"] else 0
+            totals["activity_page_cap_hits"] += 1 if activity_summary["page_cap_hit"] else 0
+            if trade_rows or activity_rows or len(samples) < 20:
+                samples.append(
+                    {
+                        **market,
+                        "trade_rows": trade_summary["rows"],
+                        "activity_rows": activity_summary["rows"],
+                        "trade_page_cap_hit": trade_summary["page_cap_hit"],
+                        "activity_page_cap_hit": activity_summary["page_cap_hit"],
+                    }
+                )
+
+            if raw_store is not None:
+                log_recv_ms = int(market["end_ms"])
+                _write_xuan_backfill_rows(
+                    raw_store=raw_store,
+                    user=args.user,
+                    endpoint="trades",
+                    rows=trade_rows,
+                    poll_ts_ms=log_recv_ms,
+                    log_recv_ms=log_recv_ms,
+                )
+                _write_xuan_backfill_rows(
+                    raw_store=raw_store,
+                    user=args.user,
+                    endpoint="activity",
+                    rows=activity_rows,
+                    poll_ts_ms=log_recv_ms,
+                    log_recv_ms=log_recv_ms,
+                )
+
+            if args.sleep_sec > 0:
+                time.sleep(float(args.sleep_sec))
+            if idx % max(1, args.log_every) == 0:
+                LOG.info(
+                    "xuan market backfill progress: %d/%d trade_rows=%d activity_rows=%d",
+                    idx,
+                    len(markets),
+                    totals["trade_rows"],
+                    totals["activity_rows"],
+                )
+    finally:
+        if raw_store is not None:
+            raw_store.close()
+
+    report = {
+        "user": args.user,
+        "days": days,
+        "symbols": symbols,
+        "start": args.start,
+        "end": args.end,
+        "dry_run": bool(args.dry_run),
+        "replay_root": args.replay_root,
+        "raw_root": None if args.dry_run else args.raw_root,
+        "page_limit": args.page_limit,
+        "max_pages": args.max_pages,
+        "totals": totals,
+        "samples": samples[:100],
+    }
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOG.info("xuan_market_backfill_public: %s", json.dumps(report, ensure_ascii=False))
+    return 2 if totals["trade_page_cap_hits"] or totals["activity_page_cap_hits"] else 0
+
+
+def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
+    from .capture.envelope import RawEnvelope
+    from .replay.normalize import normalize_xuan_activity, normalize_xuan_poll_log, normalize_xuan_trade
+    from .utils.io import iter_jsonl_gz
+
+    days = [d.strip() for d in args.days.split(",") if d.strip()]
+    if not days:
+        raise SystemExit("--days is required")
+
+    report: Dict[str, Any] = {
+        "days": days,
+        "raw_root": args.raw_root,
+        "replay_root": args.replay_root,
+        "dry_run": bool(args.dry_run),
+        "day_results": {},
+    }
+    totals = {
+        "xuan_trades_inserted": 0,
+        "xuan_activity_inserted": 0,
+        "xuan_poll_log_inserted": 0,
+        "dedup_skips": 0,
+        "raw_records": 0,
+    }
+
+    for day in days:
+        db = _replay_db_path(args.replay_root, day)
+        raw_dir = Path(args.raw_root) / day / SOURCE_KIND_XUAN_POLL
+        day_result = {
+            "db": str(db),
+            "raw_dir": str(raw_dir),
+            "raw_records": 0,
+            "xuan_trades_inserted": 0,
+            "xuan_activity_inserted": 0,
+            "xuan_poll_log_inserted": 0,
+            "dedup_skips": 0,
+            "missing_db": not db.exists(),
+            "missing_raw_dir": not raw_dir.exists(),
+        }
+        report["day_results"][day] = day_result
+        if not db.exists() or not raw_dir.exists():
+            continue
+
+        conn = sqlite3.connect(str(db))
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA busy_timeout=60000")
+            trade_seen = {
+                (
+                    row[0],
+                    row[1] or "",
+                    row[2] or "",
+                    row[3],
+                    row[4] or "",
+                    row[5],
+                    row[6],
+                )
+                for row in cur.execute(
+                    """
+                    SELECT user, tx_hash, trade_id, trade_ts_ms, condition_id, price, size
+                    FROM xuan_trades
+                    """
+                )
+            }
+            activity_seen = {
+                (
+                    row[0],
+                    row[1] or "",
+                    row[2],
+                    row[3] or "",
+                    row[4] or "",
+                )
+                for row in cur.execute(
+                    """
+                    SELECT user, tx_hash, activity_ts_ms, activity_type, condition_id
+                    FROM xuan_activity
+                    """
+                )
+            }
+            poll_seen = {
+                (row[0], row[1], row[2])
+                for row in cur.execute("SELECT user, endpoint, poll_ts_ms FROM xuan_poll_log")
+            }
+
+            for path in sorted(raw_dir.glob("*.jsonl.gz")):
+                for obj in iter_jsonl_gz(path):
+                    env = RawEnvelope.from_dict(obj)
+                    day_result["raw_records"] += 1
+                    totals["raw_records"] += 1
+                    if env.channel == CHANNEL_XUAN_TRADES:
+                        rec = normalize_xuan_trade(env)
+                        if not rec:
+                            continue
+                        key = (
+                            rec["user"],
+                            rec["tx_hash"] or "",
+                            rec["trade_id"] or "",
+                            rec["trade_ts_ms"],
+                            rec["condition_id"] or "",
+                            rec["price"],
+                            rec["size"],
+                        )
+                        if key in trade_seen:
+                            day_result["dedup_skips"] += 1
+                            totals["dedup_skips"] += 1
+                            continue
+                        trade_seen.add(key)
+                        if not args.dry_run:
+                            cur.execute(
+                                """
+                                INSERT INTO xuan_trades (
+                                    user, poll_ts_ms, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                                    condition_id, slug, event_slug, title, outcome, side,
+                                    price, size, asset, proxy_wallet, tx_hash, trade_id,
+                                    source_quality, raw_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    rec["user"],
+                                    rec["poll_ts_ms"],
+                                    rec["trade_ts_ms"],
+                                    rec["recv_ms"],
+                                    rec["recv_monotonic_ns"],
+                                    rec["capture_seq"],
+                                    rec["condition_id"],
+                                    rec["slug"],
+                                    rec["event_slug"],
+                                    rec["title"],
+                                    rec["outcome"],
+                                    rec["side"],
+                                    rec["price"],
+                                    rec["size"],
+                                    rec["asset"],
+                                    rec["proxy_wallet"],
+                                    rec["tx_hash"],
+                                    rec["trade_id"],
+                                    rec["source_quality"],
+                                    rec["raw_json"],
+                                ),
+                            )
+                        day_result["xuan_trades_inserted"] += 1
+                        totals["xuan_trades_inserted"] += 1
+                    elif env.channel == CHANNEL_XUAN_ACTIVITY:
+                        rec = normalize_xuan_activity(env)
+                        if not rec:
+                            continue
+                        key = (
+                            rec["user"],
+                            rec["tx_hash"] or "",
+                            rec["activity_ts_ms"],
+                            rec["activity_type"] or "",
+                            rec["condition_id"] or "",
+                        )
+                        if key in activity_seen:
+                            day_result["dedup_skips"] += 1
+                            totals["dedup_skips"] += 1
+                            continue
+                        activity_seen.add(key)
+                        if not args.dry_run:
+                            cur.execute(
+                                """
+                                INSERT INTO xuan_activity (
+                                    user, poll_ts_ms, activity_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                                    condition_id, slug, event_slug, title, activity_type, outcome, side,
+                                    price, size, usdc_size, asset, proxy_wallet, tx_hash,
+                                    source_quality, raw_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    rec["user"],
+                                    rec["poll_ts_ms"],
+                                    rec["activity_ts_ms"],
+                                    rec["recv_ms"],
+                                    rec["recv_monotonic_ns"],
+                                    rec["capture_seq"],
+                                    rec["condition_id"],
+                                    rec["slug"],
+                                    rec["event_slug"],
+                                    rec["title"],
+                                    rec["activity_type"],
+                                    rec["outcome"],
+                                    rec["side"],
+                                    rec["price"],
+                                    rec["size"],
+                                    rec["usdc_size"],
+                                    rec["asset"],
+                                    rec["proxy_wallet"],
+                                    rec["tx_hash"],
+                                    rec["source_quality"],
+                                    rec["raw_json"],
+                                ),
+                            )
+                        day_result["xuan_activity_inserted"] += 1
+                        totals["xuan_activity_inserted"] += 1
+                    elif env.channel == CHANNEL_XUAN_POLL_LOG:
+                        rec = normalize_xuan_poll_log(env)
+                        if not rec:
+                            continue
+                        key = (rec["user"], rec["endpoint"], rec["poll_ts_ms"])
+                        if key in poll_seen:
+                            day_result["dedup_skips"] += 1
+                            totals["dedup_skips"] += 1
+                            continue
+                        poll_seen.add(key)
+                        if not args.dry_run:
+                            cur.execute(
+                                """
+                                INSERT INTO xuan_poll_log (
+                                    user, endpoint, poll_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
+                                    rows, max_ts_ms, ok, error
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    rec["user"],
+                                    rec["endpoint"],
+                                    rec["poll_ts_ms"],
+                                    rec["recv_ms"],
+                                    rec["recv_monotonic_ns"],
+                                    rec["capture_seq"],
+                                    rec["rows"],
+                                    rec["max_ts_ms"],
+                                    rec["ok"],
+                                    rec["error"],
+                                ),
+                            )
+                        day_result["xuan_poll_log_inserted"] += 1
+                        totals["xuan_poll_log_inserted"] += 1
+            if not args.dry_run:
+                conn.commit()
+                cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+
+    report["totals"] = totals
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOG.info("merge_xuan_raw_into_replay: %s", json.dumps(report, ensure_ascii=False))
+    return 0
 
 
 def cmd_backfill_xuan_public(args: argparse.Namespace) -> int:
@@ -831,6 +1304,7 @@ def cmd_audit_replay_market(args: argparse.Namespace) -> int:
         raw_trade_max_records=max(0, int(args.raw_trade_max_records)),
         raw_book_max_records=max(0, int(args.raw_book_max_records)),
         taker_side_null_max_ratio=float(args.taker_side_null_max_ratio),
+        trusted_start_ms=int(_parse_utc_iso(args.trusted_start).timestamp() * 1000) if args.trusted_start else None,
     )
     report = run_market_replay_audit(config)
     save_audit_report(report, Path(args.output), Path(args.markdown_output) if args.markdown_output else None)
@@ -975,6 +1449,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw-trade-max-records", type=int, default=1_000_000)
     p.add_argument("--raw-book-max-records", type=int, default=250_000)
     p.add_argument("--taker-side-null-max-ratio", type=float, default=0.05)
+    p.add_argument("--trusted-start", help="Optional UTC ISO/ms trusted capture start; earlier BTC gaps are ignored")
     p.add_argument("--min-mem-available-mib", type=int, default=1536)
     p.add_argument("--min-disk-free-gb", type=int, default=100)
     p.add_argument("--max-load-1m", type=float, default=1.5)
@@ -996,6 +1471,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-sec", type=int, default=20)
     p.add_argument("--output", help="Optional JSON report path")
     p.set_defaults(func=cmd_backfill_xuan_public)
+
+    p = sub.add_parser(
+        "backfill-xuan-market-public",
+        help="Backfill xuan public Data API history market-by-market from replay market_meta",
+    )
+    p.add_argument("--user", required=True)
+    p.add_argument("--days", required=True, help="Comma-separated UTC days with replay market_meta")
+    p.add_argument("--symbols", default="BTC", help="Comma-separated symbols to backfill, default: BTC")
+    p.add_argument("--start", help="Optional UTC ISO lower bound for market windows")
+    p.add_argument("--end", help="Optional UTC ISO upper bound for market windows")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--replay-root", default="data/replay")
+    p.add_argument("--raw-root", default="data/raw")
+    p.add_argument("--page-limit", type=int, default=500)
+    p.add_argument("--max-pages", type=int, default=20)
+    p.add_argument("--timeout-sec", type=int, default=20)
+    p.add_argument("--market-limit", type=int, default=0, help="Limit markets for validation; 0 means all")
+    p.add_argument("--sleep-sec", type=float, default=0.02, help="Polite pause between market queries")
+    p.add_argument("--log-every", type=int, default=100)
+    p.add_argument("--output", help="Optional JSON report path")
+    p.set_defaults(func=cmd_backfill_xuan_market_public)
+
+    p = sub.add_parser(
+        "merge-xuan-raw-into-replay",
+        help="Merge existing raw xuan_poll files into replay xuan_* tables without rebuilding market data",
+    )
+    p.add_argument("--days", required=True, help="Comma-separated UTC days")
+    p.add_argument("--raw-root", default="data/raw")
+    p.add_argument("--replay-root", default="data/replay")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--output", help="Optional JSON report path")
+    p.set_defaults(func=cmd_merge_xuan_raw_into_replay)
 
     return parser
 

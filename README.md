@@ -16,6 +16,14 @@
 
 `public + user truth` 更适合后续实盘/执行真值验证阶段，因为它解决的是“我自己的挂单、成交、库存”问题，不是公开行情采样本身。
 
+如果目标升级为“复刻 xuan”，必须额外启用或补拉 `xuan public truth`：
+
+- `xuan_trades`
+- `xuan_activity`
+- `xuan_poll_log`
+
+否则只能做市场侧相似性研究，不能证明 xuan first-leg、completion、merge/redeem、残仓路径。
+
 ## 安全
 
 - 真实密钥不要写入 repo-tracked 文件。
@@ -209,7 +217,30 @@ uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/r
 
 ```env
 CF_XUAN_POLL_ENABLED=true
-CF_XUAN_USER=0x...
+CF_XUAN_USER=0xcfb103c37c0234f524c632d964ed31f117b5f694
+CF_XUAN_POLL_SEC=300
+CF_XUAN_POLL_PAGE_LIMIT=500
+CF_XUAN_POLL_MAX_PAGES=30
+```
+
+历史补拉 xuan public truth：
+
+```bash
+uv run python cfdata.py --log-level INFO backfill-xuan-public \
+  --user 0xcfb103c37c0234f524c632d964ed31f117b5f694 \
+  --start 2026-04-27T00:00:00Z \
+  --end 2026-05-01T00:00:00Z \
+  --max-pages 500 \
+  --timeout-sec 30 \
+  --dry-run
+
+uv run python cfdata.py --log-level INFO backfill-xuan-public \
+  --user 0xcfb103c37c0234f524c632d964ed31f117b5f694 \
+  --start 2026-04-27T00:00:00Z \
+  --end 2026-05-01T00:00:00Z \
+  --max-pages 500 \
+  --timeout-sec 30 \
+  --raw-root data/raw
 ```
 
 ## 构建回放
@@ -228,6 +259,16 @@ python cfdata.py build-replay --raw-root data/raw --replay-root data/replay --da
 python cfdata.py build-replay-rolling --hours 24
 ```
 
+replay builder 会从 `market_ws/book` raw 构建：
+
+- `md_book_l1`：YES/NO 四价四量
+- `md_book_l2`：每个 YES/NO 资产的 top5 bid/ask depth 快照，用于 clip-aware 回测和 maker fill proxy
+- `md_trades`：保留 `trade_ts_ms / taker_side / price / size / market_side`
+
+sidecar 会在标准化 book raw 中携带 `raw_l2`，包含当前 YES/NO 双边 top5 depth。builder 优先使用 `raw_l2` 写 `md_book_l2`，避免 round 初始 snapshot 只落到单侧 depth。
+
+`md_book_l2` 是 compact replay 表：默认不复制 `raw_json`，但仍按 top5 depth 实际变化写入，不做时间降采样；原始 payload 留在 `data/raw` 的短期取证窗口。
+
 长期后台循环建议直接使用：
 
 ```bash
@@ -241,6 +282,18 @@ python cfdata.py build-replay-rolling --hours 24 --validate-latest
 ```bash
 python cfdata.py validate-replay --replay-root data/replay --day 2026-04-26 --output data/replay/2026-04-26/validation.json
 ```
+
+市场侧可信度审计可以显式传入可信起点，避免把采集器启动早期缺口误判为策略失败：
+
+```bash
+uv run python cfdata.py --log-level INFO audit-replay-market \
+  --days 2026-04-27,2026-04-28,2026-04-29 \
+  --trusted-start 2026-04-27T07:30:00Z \
+  --raw-root data/raw \
+  --replay-root data/replay
+```
+
+报告会输出 `trusted_start_ms`、planned outage、每个 DB 的 book/trade 最大时间和 `partial_day`。
 
 ## 启动前 1h 审计
 
@@ -268,6 +321,7 @@ python cfdata.py audit-startup --day <UTC-YYYY-MM-DD> \
 
 - `market_meta`
 - `md_book_l1`
+- `md_book_l2`
 - `md_trades`
 - `own_order_events`
 - `own_fill_events`
@@ -276,6 +330,8 @@ python cfdata.py audit-startup --day <UTC-YYYY-MM-DD> \
 - `xuan_trades`
 - `xuan_activity`
 - `settlement_records`
+
+`md_book_l2` 是 replay 结构化深度表，不代表 maker queue truth。它能支持 top-N depth / clip pressure 分析，但不能证明自己的挂单排队成交。真实 maker fill 仍需要后续 `own_order_events / own_fill_events`。
 
 ## 3 天运行建议
 

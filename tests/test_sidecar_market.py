@@ -156,8 +156,12 @@ class SidecarNormalizationTests(unittest.TestCase):
         channel, payload, condition_id = rows2[0]
         self.assertEqual(channel, "book")
         self.assertEqual(condition_id, "cond1")
+        self.assertEqual(payload["raw_market_side"], "NO")
+        self.assertEqual(payload["raw_asset_id"], "no_tok")
         self.assertEqual(payload["yes_bid_px"], 0.41)
         self.assertEqual(payload["no_bid_px"], 0.58)
+        self.assertEqual(payload["raw_l2"]["yes"]["bids"][0], {"price": 0.41, "size": 10.0})
+        self.assertEqual(payload["raw_l2"]["no"]["asks"][0], {"price": 0.59, "size": 11.0})
 
         trade = {
             "event_type": "last_trade_price",

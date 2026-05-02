@@ -12,6 +12,8 @@
 
 只有当目标变成“验证我自己的执行链路”时，才开启 `public + user truth`。
 
+如果目标是“复刻 xuan”，需要在 public-only 基础上启用或补拉 `xuan public truth`。这不需要钱包私钥，也不等于开启我方 user truth。
+
 ## 0.0 CLOB V2 边界
 
 - `public-only` 当前依赖的是 `market_ws + gamma meta + gamma settlement`，不直接依赖旧版 CLOB Python SDK。
@@ -119,6 +121,40 @@ uv run python cfdata.py --log-level INFO capture-sidecar-env --env-file config/r
 - 不要在长期运行里使用 `CF_MARKET_PREFIXES=*` 且 `CF_MAX_MARKETS_PER_PREFIX=0`
 - 那会把大量 future rounds 一次性订到单个 market WS，常见症状就是 `assets` 数暴涨、WS 反复断线、settlement 轮询 404/过载
 
+### Xuan public truth
+
+持续采集：
+
+```env
+CF_XUAN_POLL_ENABLED=true
+CF_XUAN_USER=0xcfb103c37c0234f524c632d964ed31f117b5f694
+CF_XUAN_POLL_SEC=300
+CF_XUAN_POLL_PAGE_LIMIT=500
+CF_XUAN_POLL_MAX_PAGES=30
+```
+
+历史补拉：
+
+```bash
+uv run python cfdata.py --log-level INFO backfill-xuan-public \
+  --user 0xcfb103c37c0234f524c632d964ed31f117b5f694 \
+  --start 2026-04-27T00:00:00Z \
+  --end 2026-05-01T00:00:00Z \
+  --max-pages 500 \
+  --timeout-sec 30 \
+  --dry-run
+
+uv run python cfdata.py --log-level INFO backfill-xuan-public \
+  --user 0xcfb103c37c0234f524c632d964ed31f117b5f694 \
+  --start 2026-04-27T00:00:00Z \
+  --end 2026-05-01T00:00:00Z \
+  --max-pages 500 \
+  --timeout-sec 30 \
+  --raw-root data/raw
+```
+
+补拉后需要重建 replay，`xuan_trades / xuan_activity / xuan_poll_log` 才会进入 SQLite。
+
 ## 1. 启动前 1h 门槛验证
 
 ### public-only
@@ -175,6 +211,14 @@ done
 - 长期运行不要把 `build-replay-rolling` 和外层 `validate-replay --day "$(date -u +%F)"` 拆成两条命令。
 - 这会在跨 UTC 零点时引入竞态：rolling build 仍在构建前一份时间快照，而 shell 已经拿到新的 `DAY_UTC`，结果会误报 `unable to open database file`。
 - 标准做法是直接使用 `build-replay-rolling --validate-latest`，让“构建哪一天”和“校验哪一天”共享同一快照。
+
+构建后的 replay 深度表：
+
+- `md_book_l1`：YES/NO 四价四量
+- `md_book_l2`：YES/NO 每个资产的 top5 bid/ask depth
+- `md_trades`：保留 `trade_ts_ms / taker_side / price / size / market_side`
+
+sidecar 在 book raw 中嵌入 `raw_l2`，builder 由此写 `md_book_l2`。`md_book_l2` 默认不复制 `raw_json`，但仍按 top5 depth 实际变化写入，不做时间降采样；原始 payload 仍在 `data/raw` 中短期保留。`md_book_l2` 只支持 depth-aware maker-fill proxy，不能证明 queue priority 或真实 maker fill。
 
 ## 3. 运行期监控
 
