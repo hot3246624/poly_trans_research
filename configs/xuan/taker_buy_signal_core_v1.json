@@ -1,0 +1,486 @@
+{
+  "schema": "taker_buy_signal_core_v1",
+  "status": "research_backtest_passed_shadow_required",
+  "purpose": "Current best xuan-inspired surpass candidate from public replay. This is not live-ready until own execution shadow confirms fillability and latency.",
+  "data_window": {
+    "replay_root": "data/replay",
+    "trusted_start_utc": "2026-04-27T07:25:00Z",
+    "days": [
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ]
+  },
+  "execution_model": {
+    "trigger": "public md_trades.taker_side=BUY",
+    "first_side": "md_trades.market_side",
+    "first_side_gate": "must equal current L1 high-side by midpoint",
+    "first_leg_cost_model": "L2 ask sweep VWAP",
+    "completion_cost_model": "opposite L2 ask sweep VWAP",
+    "residual_valuation": "settlement_records.winner_side",
+    "active_tranche_limit": 1,
+    "block_after_residual": true,
+    "cooldown_s": 10
+  },
+  "default_rule": {
+    "trade_price_min": 0.55,
+    "trade_price_max": 0.70,
+    "trade_size_min": 100,
+    "trade_size_max": 150,
+    "max_l1_immediate_pair": 0.99,
+    "completion_window_s": 30,
+    "completion_pair_ceiling": 0.96,
+    "clip_size": 60,
+    "min_first_l2_vwap": 0.55,
+    "max_first_l2_vwap": 0.75,
+    "tail_freeze_s": 60
+  },
+  "capacity_variants": [
+    {
+      "clip_size": 60,
+      "block_after_residual": true,
+      "rows": 212,
+      "closed_rate": 0.566,
+      "first_winner_rate": 0.7311,
+      "residual_qty": 92,
+      "residual_winner_rate": 0.8043,
+      "pnl": 1376.39,
+      "roi_on_first_cost": 0.1766,
+      "negative_days": []
+    },
+    {
+      "clip_size": 120,
+      "block_after_residual": true,
+      "rows": 158,
+      "closed_rate": 0.5823,
+      "first_winner_rate": 0.6899,
+      "residual_qty": 66,
+      "residual_winner_rate": 0.7727,
+      "pnl": 1771.92,
+      "roi_on_first_cost": 0.1527,
+      "negative_days": []
+    },
+    {
+      "clip_size": 160,
+      "block_after_residual": true,
+      "rows": 138,
+      "closed_rate": 0.5435,
+      "first_winner_rate": 0.7029,
+      "residual_qty": 63,
+      "residual_winner_rate": 0.746,
+      "pnl": 1786.8,
+      "roi_on_first_cost": 0.1311,
+      "negative_days": []
+    }
+  ],
+  "non_blocking_reference_variants": [
+    {
+      "clip_size": 60,
+      "block_after_residual": false,
+      "rows": 215,
+      "closed_rate": 0.55814,
+      "first_winner_rate": 0.734884,
+      "residual_qty": 95,
+      "residual_winner_rate": 0.810526,
+      "pnl": 1440.5702,
+      "roi_on_first_cost": 0.182147,
+      "negative_days": []
+    },
+    {
+      "clip_size": 120,
+      "block_after_residual": false,
+      "rows": 161,
+      "closed_rate": 0.571429,
+      "first_winner_rate": 0.695652,
+      "residual_qty": 69,
+      "residual_winner_rate": 0.782609,
+      "pnl": 1897.6993,
+      "roi_on_first_cost": 0.16031,
+      "negative_days": []
+    },
+    {
+      "clip_size": 160,
+      "block_after_residual": false,
+      "rows": 139,
+      "closed_rate": 0.539568,
+      "first_winner_rate": 0.705036,
+      "residual_qty": 64,
+      "residual_winner_rate": 0.75,
+      "pnl": 1833.5236,
+      "roi_on_first_cost": 0.133468,
+      "negative_days": []
+    }
+  ],
+  "immediate_pair_gate_counterfactual": [
+    {
+      "max_l1_immediate_pair": 0.99,
+      "rows": 215,
+      "pnl": 1440.57,
+      "roi_on_first_cost": 0.1821,
+      "negative_days": []
+    },
+    {
+      "max_l1_immediate_pair": 1.0,
+      "rows": 418,
+      "pnl": 1369.05,
+      "roi_on_first_cost": 0.0889,
+      "negative_days": [
+        "2026-04-29"
+      ]
+    },
+    {
+      "max_l1_immediate_pair": 1.01,
+      "rows": 1220,
+      "pnl": -943.7,
+      "roi_on_first_cost": -0.0209,
+      "negative_days": [
+        "2026-04-27",
+        "2026-04-28",
+        "2026-04-29",
+        "2026-05-01"
+      ]
+    }
+  ],
+  "near_miss_replay_audit": {
+    "source": "scripts/analyze_taker_buy_nearmiss_replay.py",
+    "output_dir": "data/exports/taker_buy_nearmiss_replay_audit_20260505",
+    "inputs": [
+      "data/exports/btc5m_taker_buy_signal_fast_0427_0501_price55_70_size100_150_l1imm100_30s96_l2first_highside_v1",
+      "data/exports/btc5m_taker_buy_signal_fast_0427_0501_price55_70_size100_150_l1imm101_30s96_l2first_highside_v1"
+    ],
+    "deduped_rows": 1343,
+    "l1_immediate_pair_buckets": [
+      {
+        "bucket": "<=0.99",
+        "rows": 198,
+        "closed_rate": 0.59596,
+        "first_winner_rate": 0.732323,
+        "residual_winner_rate": 0.8125,
+        "pnl": 1276.8581,
+        "roi_on_first_cost": 0.175654,
+        "negative_days": []
+      },
+      {
+        "bucket": "0.99-1.00",
+        "rows": 221,
+        "closed_rate": 0.488688,
+        "first_winner_rate": 0.615385,
+        "residual_winner_rate": 0.59292,
+        "pnl": 114.989,
+        "roi_on_first_cost": 0.014066,
+        "negative_days": [
+          "2026-04-27",
+          "2026-04-29"
+        ]
+      },
+      {
+        "bucket": "1.00-1.01",
+        "rows": 924,
+        "closed_rate": 0.474026,
+        "first_winner_rate": 0.587662,
+        "residual_winner_rate": 0.532922,
+        "pnl": -1315.0094,
+        "roi_on_first_cost": -0.038457,
+        "negative_days": [
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30",
+          "2026-05-01"
+        ]
+      }
+    ],
+    "verdict": "Keep max_l1_immediate_pair=0.99 for V1 clean-completion core. 0.99-1.00 is weak/day-fragile and only eligible for separate repair research. 1.00-1.01 is rejected for V1 core."
+  },
+  "dynamic_clip_audit": {
+    "source": "scripts/analyze_taker_buy_dynamic_clip_from_runs.py",
+    "output_dir": "data/exports/taker_buy_dynamic_clip_audit_20260505",
+    "base_rows": 212,
+    "base_clip": 60,
+    "candidate_policies": [
+      {
+        "policy": "base60",
+        "pnl": 1376.3907,
+        "roi_on_first_cost": 0.176619,
+        "min_day_pnl": 147.9816,
+        "negative_days": []
+      },
+      {
+        "policy": "l1_immediate_pair<=0.98 -> clip120 else clip60",
+        "fallback_to_clip60": 9,
+        "pnl": 2354.5188,
+        "roi_on_first_cost": 0.196473,
+        "min_day_pnl": 186.0935,
+        "negative_days": []
+      },
+      {
+        "policy": "l1_immediate_pair<=0.98 -> clip160 else clip60",
+        "fallback_to_clip60": 15,
+        "pnl": 2621.4733,
+        "roi_on_first_cost": 0.181391,
+        "min_day_pnl": 263.5446,
+        "negative_days": []
+      },
+      {
+        "policy": "offset>=60s && l1_immediate_pair<=0.98 -> clip160 else clip60",
+        "fallback_to_clip60": 10,
+        "pnl": 2531.5247,
+        "roi_on_first_cost": 0.236073,
+        "min_day_pnl": 220.1074,
+        "negative_days": []
+      }
+    ],
+    "verdict": "V1 sizing should not be fixed 120/160. Keep base clip 60 and only upclip in stronger edge states, prioritizing offset>=60s and l1_immediate_pair<=0.98. Requires native dynamic replay and live fillability shadow before enforcement."
+  },
+  "candidate_cache_current_replay_audit": {
+    "cache_source": "scripts/build_taker_buy_signal_candidate_cache.py",
+    "search_source": "scripts/search_taker_buy_signal_candidate_cache.py",
+    "cache_output_dir": "data/exports/taker_buy_signal_candidate_cache_0427_0501_clip60_v1",
+    "search_output_dir": "data/exports/taker_buy_signal_candidate_search_focused_0427_0501_clip60_v1",
+    "market_count": 1343,
+    "candidate_rows": 59569,
+    "prefiltered_rows": 539,
+    "stable_result_count": 573,
+    "baseline_current_cache": {
+      "rule": "price 0.55-0.70, size 100-150, first_l2_vwap 0.55-0.75, high-side, l1<=0.99, completion<=0.96, block_after_residual",
+      "rows": 400,
+      "pnl": 546.98742,
+      "roi_on_first_cost": 0.036659,
+      "min_day_pnl": 45.84168,
+      "closed_rate": 0.8525,
+      "first_winner_rate": 0.71,
+      "residual_winner_rate": 0.525424,
+      "negative_days": []
+    },
+    "top_stable_candidate": {
+      "rule": "price 0.55-0.70, size 100-150, first_l2_vwap 0.60-0.75, high-side, l1<=0.995, completion<=0.95, block_after_residual",
+      "rows": 319,
+      "pnl": 900.14274,
+      "roi_on_first_cost": 0.072816,
+      "min_day_pnl": 77.21094,
+      "closed_rate": 0.783699,
+      "first_winner_rate": 0.742947,
+      "residual_winner_rate": 0.666667,
+      "negative_days": []
+    },
+    "thin_high_roi_candidate": {
+      "rule": "price 0.65-0.70, size 100-150, first_l2_vwap 0.55-0.75, high-side, l1<=0.995, completion<=0.95",
+      "rows": 159,
+      "pnl": 537.69534,
+      "roi_on_first_cost": 0.083583,
+      "min_day_pnl": 50.54406,
+      "closed_rate": 0.786164,
+      "first_winner_rate": 0.735849,
+      "residual_winner_rate": 0.735294,
+      "negative_days": []
+    },
+    "verdict": "Use candidate cache as the main replay iteration path. Current replay lowers the old core ROI but increases frequency and close rate. The strongest stable improvement is first_l2_vwap>=0.60 plus completion ceiling 0.95; high-price 0.65-0.70 is an upclip/priority candidate, not a standalone main strategy."
+  },
+  "candidate_finalists": {
+    "source": "scripts/analyze_taker_buy_candidate_finalists.py",
+    "output_dir": "data/exports/taker_buy_candidate_finalists_0427_0501_clip60_v1",
+    "stage": "research_candidate_v1",
+    "estimated_distance_to_strategy_freeze": "65-70%",
+    "freeze_ready": false,
+    "top_finalist": {
+      "rule": "price 0.55-0.70, size 100-150, first_l2_vwap 0.60-0.75, high-side, l1<=0.995, completion<=0.95, block_after_residual",
+      "rows": 319,
+      "pnl": 900.14274,
+      "roi_on_first_cost": 0.072816,
+      "min_day_pnl": 77.21094,
+      "closed_rate": 0.783699,
+      "first_winner_rate": 0.742947,
+      "residual_winner_rate": 0.666667,
+      "by_day_pnl": {
+        "2026-04-27": 173.2173,
+        "2026-04-28": 77.21094,
+        "2026-04-29": 224.64414,
+        "2026-04-30": 244.2939,
+        "2026-05-01": 180.77646
+      },
+      "slippage_stress": [
+        {
+          "adverse_slippage_bps_per_leg": 0,
+          "pnl": 900.14274,
+          "roi_on_first_cost": 0.072816,
+          "min_day_pnl": 77.21094,
+          "negative_days": []
+        },
+        {
+          "adverse_slippage_bps_per_leg": 25,
+          "pnl": 814.79274,
+          "roi_on_first_cost": 0.065657,
+          "min_day_pnl": 55.01094,
+          "negative_days": []
+        },
+        {
+          "adverse_slippage_bps_per_leg": 50,
+          "pnl": 729.44274,
+          "roi_on_first_cost": 0.058554,
+          "min_day_pnl": 32.81094,
+          "negative_days": []
+        },
+        {
+          "adverse_slippage_bps_per_leg": 100,
+          "pnl": 558.74274,
+          "roi_on_first_cost": 0.044509,
+          "min_day_pnl": -11.58906,
+          "negative_days": [
+            "2026-04-28"
+          ]
+        }
+      ]
+    },
+    "xuan_overlap": {
+      "policy_rows_output_dir": "data/exports/taker_buy_top_finalist_policy_rows_0427_0501_clip60_v1",
+      "overlap_output_dir": "data/exports/taker_buy_top_finalist_xuan_overlap_0427_0501_clip60_v1",
+      "rows": 319,
+      "markets": 294,
+      "xuan_any_in_market_rate": 0.717868,
+      "xuan_same_side_in_market_rate": 0.717868,
+      "xuan_any_near30_rate": 0.62069,
+      "xuan_same_near30_rate": 0.595611,
+      "xuan_same_near30_delta_p50_s": 2.7535,
+      "xuan_same_near30_cohort": {
+        "rows": 190,
+        "pnl": 536.43798,
+        "roi_on_first_cost": 0.073068,
+        "first_winner_rate": 0.768421,
+        "closed_rate": 0.747368
+      },
+      "not_xuan_same_near30_cohort": {
+        "rows": 129,
+        "pnl": 363.70476,
+        "roi_on_first_cost": 0.072447,
+        "first_winner_rate": 0.705426,
+        "closed_rate": 0.837209
+      },
+      "verdict": "Top finalist overlaps strongly with xuan same-side public activity, but non-overlap rows are also profitable. This supports a public-state edge rather than pure xuan-copying."
+    },
+    "remaining_blockers": [
+      "more out-of-sample replay days",
+      "native dynamic sizing replay",
+      "public WS shadow fillability and latency",
+      "slippage and partial-fill calibration"
+    ],
+    "verdict": "Top finalist is robust enough for shadow-freeze preparation, not live enforcement. It survives 50 bps per leg adverse stress across all five days but fails a 100 bps per leg min-day test."
+  },
+  "oos_validation": {
+    "source": "scripts/validate_taker_buy_finalist_oos.py",
+    "example_command": "uv run python scripts/validate_taker_buy_finalist_oos.py --replay-root data/replay --days 2026-05-02,2026-05-03,2026-05-04 --output-dir data/exports/taker_buy_finalist_oos_20260502_20260504",
+    "fixed_rule": {
+      "trade_price_min": 0.55,
+      "trade_price_max": 0.70,
+      "trade_size_min": 100,
+      "trade_size_max": 150,
+      "min_first_l2_vwap": 0.60,
+      "max_first_l2_vwap": 0.75,
+      "max_l1_immediate_pair": 0.995,
+      "completion_pair_ceiling": 0.95,
+      "clip_size": 60,
+      "side_alignment": "high",
+      "block_after_residual": true,
+      "cooldown_s": 10
+    },
+    "go_no_go_thresholds": {
+      "min_rows_per_day": 40,
+      "negative_days": 0,
+      "min_roi_on_first_cost": 0.03,
+      "min_closed_rate": 0.70,
+      "min_first_winner_rate": 0.68,
+      "min_xuan_same_near30_rate_if_available": 0.45
+    },
+    "verdict_policy": "Passing OOS allows shadow freeze only, not live enforce. Failing OOS must return to research; do not retune parameters inside the same OOS window and declare success."
+  },
+  "xuan_overlap_audit": {
+    "source": "scripts/analyze_taker_buy_signal_xuan_overlap.py",
+    "rows_csv": "data/exports/btc5m_taker_buy_signal_fast_0427_0501_price55_70_size100_150_l1imm099_30s96_l2first_blockres_clip60_v1/btc5m_taker_buy_signal_fast_rows.csv",
+    "output_dir": "data/exports/taker_buy_signal_xuan_overlap_0427_0501_core_blockres_clip60_v1",
+    "rows": 212,
+    "markets": 209,
+    "xuan_same_side_near30_rate": 0.617925,
+    "xuan_same_side_near5_rate": 0.377358,
+    "same_near30_delta_p50_s": 1.387,
+    "xuan_same_near30_cohort": {
+      "rows": 131,
+      "pnl": 972.5392,
+      "roi_on_first_cost": 0.203427,
+      "first_winner_rate": 0.748092,
+      "closed_rate": 0.534351
+    },
+    "not_xuan_same_near30_cohort": {
+      "rows": 81,
+      "pnl": 403.8515,
+      "roi_on_first_cost": 0.13407,
+      "first_winner_rate": 0.703704,
+      "closed_rate": 0.617284
+    }
+  },
+  "boundary_findings": {
+    "size_50_100": "Positive but weaker and one negative day; use only as expansion candidate after shadow.",
+    "size_150_200": "Edge nearly disappears; do not include in default rule.",
+    "price_70_90": "Winner bias is strong but pair edge is thin; do not include in default rule."
+  },
+  "shadow_requirements": [
+    "Confirm we can observe public BUY trigger with comparable latency.",
+    "Confirm L2 sweep quote is still available when our order reaches CLOB.",
+    "Record why_allowed/why_blocked for every candidate.",
+    "Track first-leg actual slippage versus replay L2 VWAP.",
+    "Track 30s completion availability and actual completion slippage.",
+    "Stop if same-day residual loser rate materially exceeds replay expectation."
+  ],
+  "public_ws_shadow": {
+    "script": "scripts/run_taker_buy_signal_public_ws_shadow.py",
+    "rolling_script": "scripts/run_taker_buy_signal_public_ws_shadow_rolling.py",
+    "default_trigger_source": "last_trade_price",
+    "recommended_command": "uv run python scripts/run_taker_buy_signal_public_ws_shadow.py --config configs/xuan/taker_buy_signal_core_v1.json --round-offsets 0,1,2 --duration-sec 900 --output-dir data/exports/taker_buy_signal_public_ws_shadow_$(date -u +%Y%m%d_%H%M%S) --trigger-source last_trade_price --probe-immediate-pairs 0.99,1.00,1.01",
+    "recommended_rolling_command": "uv run python scripts/run_taker_buy_signal_public_ws_shadow_rolling.py --config configs/xuan/taker_buy_signal_core_v1.json --round-offsets 0,1,2 --duration-sec 3600 --chunk-sec 840 --output-dir data/exports/taker_buy_signal_public_ws_shadow_rolling_$(date -u +%Y%m%d_%H%M%S) --trigger-source last_trade_price --probe-immediate-pairs 0.99,1.00,1.01",
+    "fixed_subscription_note": "Base observer resolves round-offsets once at startup. Use the rolling wrapper for unattended multi-hour runs.",
+    "smoke_test_2026_05_05": {
+      "output_dir": "data/exports/taker_buy_signal_public_ws_shadow_smoke_20260505_last_trade",
+      "duration_sec": 75,
+      "subscribed_markets": 2,
+      "candidate_count": 6,
+      "allowed_count": 0,
+      "primary_block_reason": "immediate_pair_too_high",
+      "place_real_orders": false
+    },
+    "rolling_shadow_2026_05_05_073955": {
+      "output_dir": "data/exports/taker_buy_signal_public_ws_shadow_rolling_20260505_073955",
+      "duration_sec": 900,
+      "chunk_sec": 280,
+      "chunks": 4,
+      "events": 47,
+      "candidate_count": 11,
+      "allowed_count": 0,
+      "candidate_l1_immediate_pair_min": 1.01,
+      "candidate_l1_immediate_pair_p50": 1.03,
+      "candidate_offset_p50_s": 29.655,
+      "primary_block_reason": "immediate_pair_too_high",
+      "verdict": "No valid opportunity appeared; do not loosen max_l1_immediate_pair because replay counterfactual turns negative at 1.01."
+    },
+    "probe_shadow_2026_05_05_082514": {
+      "output_dir": "data/exports/taker_buy_signal_public_ws_shadow_probe_20260505_082514",
+      "duration_sec": 300,
+      "chunks": 2,
+      "candidate_count": 10,
+      "allowed_count": 0,
+      "candidate_l1_immediate_pair_min": 1.01,
+      "candidate_l1_immediate_pair_p50": 1.01,
+      "probe_thresholds": [
+        0.99,
+        1.0,
+        1.01
+      ],
+      "probe_1_01": {
+        "starts": 1,
+        "completed": 0,
+        "residual_open": 1,
+        "min_pair_cost_seen_30s": 0.98
+      },
+      "verdict": "A 1.01 near-miss improved only to 0.98 within 30s and failed the 0.96 completion ceiling; this supports keeping the 0.99 hard gate."
+    }
+  }
+}
