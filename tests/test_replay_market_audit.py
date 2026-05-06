@@ -129,6 +129,8 @@ class ReplayMarketAuditTests(unittest.TestCase):
             self.assertEqual(report["own_truth_audit"], "N/A")
             self.assertEqual(report["days"][0]["market_side_audit"], "pass")
             self.assertEqual(report["days"][0]["md_book_l1"]["size_null_rates"]["yes_bid_sz"], 0.0)
+            self.assertEqual(report["days"][0]["settlement_records"]["btc_settlement_coverage"], 1.0)
+            self.assertEqual(report["days"][0]["settlement_records"]["settlement_coverage_ratio"], 1.0)
 
     def test_market_audit_fails_small_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

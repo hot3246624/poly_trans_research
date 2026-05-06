@@ -382,8 +382,11 @@ def normalize_settlement(env: RawEnvelope) -> Optional[Dict[str, Any]]:
     return {
         "condition_id": condition_id,
         "official_outcome": side,
+        "winner_side": normalize_side(pick(p, "winner_side", "official_outcome", "outcome", "winner", "resolution")) or side,
+        "winner_token_id": str(pick(p, "winner_token_id", "winnerTokenId") or "") or None,
         "settle_ms": as_int(pick(p, "settle_ms", "settled_ms", "timestamp", "resolved_at")),
         "resolution_source": str(pick(p, "resolution_source", "source") or env.source),
+        "raw_json": as_json_text(pick(p, "raw_json")) or as_json_text(p),
         "capture_seq": env.capture_seq,
     }
 
@@ -428,6 +431,7 @@ def normalize_xuan_trade(env: RawEnvelope) -> Optional[Dict[str, Any]]:
         "event_slug": str(pick(p, "event_slug", "eventSlug") or "") or None,
         "title": str(pick(p, "title") or "") or None,
         "outcome": str(pick(p, "outcome") or "") or None,
+        "outcome_side": normalize_side(pick(p, "outcome", "outcome_side", "outcomeSide")),
         "side": str(pick(p, "side") or "") or None,
         "price": as_float(pick(p, "price")),
         "size": as_float(pick(p, "size", "amount")),
@@ -459,6 +463,7 @@ def normalize_xuan_activity(env: RawEnvelope) -> Optional[Dict[str, Any]]:
         "title": str(pick(p, "title") or "") or None,
         "activity_type": str(pick(p, "activity_type", "type") or "") or None,
         "outcome": str(pick(p, "outcome") or "") or None,
+        "outcome_side": normalize_side(pick(p, "outcome", "outcome_side", "outcomeSide")),
         "side": str(pick(p, "side") or "") or None,
         "price": as_float(pick(p, "price")),
         "size": as_float(pick(p, "size", "amount")),
