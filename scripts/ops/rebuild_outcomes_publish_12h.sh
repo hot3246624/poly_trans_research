@@ -47,6 +47,12 @@ run_outcome_backfill() {
   "${cmd[@]}"
 }
 
-flock "$REPLAY_LOCK_PATH" "$UV_BIN" run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest
-run_outcome_backfill
-scripts/ops/refresh_replay_published.sh
+run_cycle() {
+  "$UV_BIN" run python cfdata.py --log-level INFO build-replay-rolling --hours 24 --validate-latest
+  run_outcome_backfill
+  scripts/ops/refresh_replay_published.sh
+}
+
+exec 9>"$REPLAY_LOCK_PATH"
+flock 9
+run_cycle
