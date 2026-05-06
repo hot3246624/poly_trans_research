@@ -228,6 +228,86 @@ sidecar 在 book raw 中嵌入 `raw_l2`，builder 由此写 `md_book_l2`。`md_b
 pgrep -fl 'capture-sidecar-env|build-replay-rolling'
 ```
 
+## 3.1 同 AZ 回测机直接只读 replay
+
+如果新回测服务器与采集服务器在同一个 AZ / 子网，优先走私网只读挂载，不要反复 `rsync` 全量 replay。
+
+边界：
+
+- 只发布冻结日 replay，不发布当天和昨天的热 DB。
+- 新服务器只读 `replay_published`，不要读 `data/raw`。
+- SQLite 必须 `mode=ro&immutable=1` 打开。
+
+采集服务器准备：
+
+```bash
+cd /home/ubuntu/poly_trans_research
+chmod +x scripts/ops/refresh_replay_published.sh
+scripts/ops/refresh_replay_published.sh
+```
+
+安装最小 NFS server 组件：
+
+```bash
+sudo apt update
+sudo apt install -y nfs-kernel-server
+```
+
+找出采集服务器当前私网 CIDR，例如 `172.31.32.0/20`：
+
+```bash
+ip -o -f inet addr show scope global | awk '{print $4}'
+```
+
+假设回测服务器与采集服务器在同一子网，导出只读 replay：
+
+```bash
+echo '/home/ubuntu/poly_trans_research/data/replay_published 172.31.32.0/20(ro,sync,no_subtree_check)' \
+  | sudo tee /etc/exports.d/poly_replay.exports
+sudo exportfs -ra
+sudo systemctl enable --now nfs-kernel-server
+```
+
+每小时刷新一次冻结日发布目录：
+
+```bash
+( crontab -l 2>/dev/null | grep -v 'refresh_replay_published.sh' ; \
+  echo '15 * * * * cd /home/ubuntu/poly_trans_research && scripts/ops/refresh_replay_published.sh >> data/logs/replay_published_refresh.log 2>&1' \
+) | crontab -
+```
+
+AWS 安全组还需要额外放行：
+
+- `TCP 2049`
+- 来源限制为回测服务器私网 IP、回测服务器安全组，或当前子网 CIDR
+
+新回测服务器挂载：
+
+```bash
+sudo apt update
+sudo apt install -y nfs-common sqlite3
+sudo mkdir -p /mnt/poly-replay
+sudo mount -t nfs4 -o ro,nconnect=8,noatime,hard,timeo=600,retrans=2 \
+  172.31.38.62:/home/ubuntu/poly_trans_research/data/replay_published \
+  /mnt/poly-replay
+```
+
+开机自动挂载：
+
+```bash
+echo '172.31.38.62:/home/ubuntu/poly_trans_research/data/replay_published /mnt/poly-replay nfs4 ro,_netdev,noatime,nconnect=8,hard,timeo=600,retrans=2 0 0' \
+  | sudo tee -a /etc/fstab
+```
+
+新服务器使用规则：
+
+- 只读 `/mnt/poly-replay/YYYY-MM-DD/crypto_5m.sqlite`
+- trusted start：`2026-04-27T07:25:00Z`
+- 只使用 replay 表：`market_meta`、`md_trades`、`md_book_l1`、`md_book_l2`、`xuan_trades`、`xuan_activity`、`settlement_records`
+- winner truth 使用 `settlement_records.winner_side`
+- xuan outcome 使用 `xuan_trades.outcome_side` / `xuan_activity.outcome_side`
+- 不要自行重复做 `Up/Down -> YES/NO` 映射
+
 日志：
 
 ```bash
