@@ -1857,7 +1857,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Backfill official YES/NO outcomes from public market metadata into replay settlement_records",
     )
     p.add_argument("--days", required=True, help="Comma-separated UTC days with replay market_meta")
-    p.add_argument("--symbols", default="BTC,ETH,SOL,XRP", help="Comma-separated symbols, default: BTC,ETH,SOL,XRP")
+    p.add_argument(
+        "--symbols",
+        default="",
+        help="Comma-separated symbols. Leave empty to backfill every symbol present in replay market_meta.",
+    )
     p.add_argument("--trusted-start", help="Optional UTC ISO lower bound for market windows")
     p.add_argument("--end", help="Optional UTC ISO upper bound for market windows")
     p.add_argument("--dry-run", action="store_true")

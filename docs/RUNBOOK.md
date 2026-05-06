@@ -155,6 +155,37 @@ uv run python cfdata.py --log-level INFO backfill-xuan-public \
 
 补拉后需要重建 replay，`xuan_trades / xuan_activity / xuan_poll_log` 才会进入 SQLite。
 
+### Official market outcomes
+
+用于 winner-bias / residual PnL 的官方胜负结果应写入 replay：
+
+```bash
+uv run python cfdata.py --log-level INFO backfill-market-outcomes \
+  --days 2026-04-27,2026-04-28,2026-04-29,2026-04-30,2026-05-01 \
+  --trusted-start 2026-04-27T07:25:00Z \
+  --end 2026-05-02T00:00:00Z \
+  --dry-run \
+  --fetch-retries 3 \
+  --output data/replay/audits/outcome_backfill_dry_run_full.json
+
+uv run python cfdata.py --log-level INFO backfill-market-outcomes \
+  --days 2026-04-27,2026-04-28,2026-04-29,2026-04-30,2026-05-01 \
+  --trusted-start 2026-04-27T07:25:00Z \
+  --end 2026-05-02T00:00:00Z \
+  --fetch-retries 3 \
+  --output data/replay/audits/outcome_backfill_write_full.json
+```
+
+默认不限制 symbol；命令会回填 replay `market_meta` 中存在的全部 symbol。只有在想缩小范围时，才显式传 `--symbols BTC,ETH,...`。
+
+回测读取规则：
+
+- 官方 winner 使用 `settlement_records.winner_side`
+- `winner_side` 只允许 `YES/NO`
+- `resolution_source='gamma_api'` 是官方公开 API 来源
+- `resolution_source` 包含 `inferred` 时只能作为推断值，不能当官方 truth
+- Xuan 原始 `Up/Down` 用 `xuan_trades.outcome_side` / `xuan_activity.outcome_side`
+
 ## 1. 启动前 1h 门槛验证
 
 ### public-only
@@ -205,6 +236,24 @@ while true; do
 done
 ' > data/logs/rebuild_3d_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
+
+如果 replay 需要长期给同 AZ 的回测服务器直接只读消费，建议把长期 `12h` 重建改为：
+
+```bash
+cd /home/ubuntu/poly_trans_research
+nohup bash -lc '
+while true; do
+  scripts/ops/rebuild_outcomes_publish_12h.sh || true
+  sleep 43200
+done
+' > data/logs/rebuild_with_outcomes_12h_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+该脚本固定做三件事：
+
+- `build-replay-rolling --hours 24 --validate-latest`
+- `backfill-market-outcomes`（最近若干 UTC 日）
+- `refresh_replay_published.sh`
 
 注意：
 
