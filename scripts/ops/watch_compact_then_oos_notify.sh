@@ -9,6 +9,7 @@ POLL_SEC="${POLYTRANS_WATCH_POLL_SEC:-60}"
 OOS_DAYS="${POLYTRANS_OOS_DAYS:-2026-05-02,2026-05-03,2026-05-04,2026-05-05}"
 OOS_TAG="${POLYTRANS_OOS_TAG:-20260507_0502_0505}"
 OOS_OUTPUT_DIR="${POLYTRANS_OOS_OUTPUT_DIR:-/tmp/taker_buy_finalist_oos_${OOS_TAG}}"
+RESTORE_PREVDAY_CRON_LINE="${POLYTRANS_RESTORE_PREVDAY_CRON_LINE:-}"
 HOSTNAME_VALUE="$(hostname)"
 
 notify() {
@@ -25,6 +26,10 @@ TARGET_PID="$(<"$PIDFILE")"
 while kill -0 "$TARGET_PID" 2>/dev/null; do
   sleep "$POLL_SEC"
 done
+
+if [ -n "$RESTORE_PREVDAY_CRON_LINE" ]; then
+  ( crontab -l 2>/dev/null | grep -v 'build_previous_day_replay_publish.sh' ; echo "$RESTORE_PREVDAY_CRON_LINE" ) | crontab -
+fi
 
 if ! POLYTRANS_REPLAY_ROOT="$DATA_ROOT/data/replay_published" \
   POLYTRANS_OOS_DAYS="$OOS_DAYS" \
