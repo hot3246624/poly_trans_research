@@ -187,6 +187,16 @@ class BookAssembler:
             state.asks = _replace_top_level(state.asks, price=ask_px, size=ask_sz, is_bid=False)
         state.seen = True
 
+    def update_level(self, side: str, *, order_side: str, price: float, size: float) -> None:
+        state = self._side_state(side)
+        if order_side == "BUY":
+            state.bids = _replace_top_level(state.bids, price=price, size=max(0.0, size), is_bid=True)
+        elif order_side == "SELL":
+            state.asks = _replace_top_level(state.asks, price=price, size=max(0.0, size), is_bid=False)
+        else:
+            return
+        state.seen = True
+
     def full_l1(self, *, source_ts_ms: Optional[int]) -> Optional[Dict[str, Any]]:
         if not self.yes.seen or not self.no.seen:
             return None
@@ -718,11 +728,17 @@ def _handle_price_change(
 
         best_bid = _parse_price(change.get("best_bid"))
         best_ask = _parse_price(change.get("best_ask"))
-        if best_bid is None and best_ask is None:
+        order_side = str(change.get("side") or change.get("book_side") or change.get("order_side") or "").strip().upper()
+        level_price = _parse_price(change.get("price"))
+        level_size = _parse_size(change.get("size") or change.get("amount"))
+        has_level_delta = order_side in {"BUY", "SELL"} and level_price is not None and level_size is not None
+        if best_bid is None and best_ask is None and not has_level_delta:
             continue
 
         asm = assemblers.setdefault(condition_id, BookAssembler())
         asm.update_best_bid_ask(side, bid_px=best_bid, ask_px=best_ask)
+        if has_level_delta:
+            asm.update_level(side, order_side=order_side, price=float(level_price), size=float(level_size))
 
         source_ts_ms = _parse_ts_ms(change.get("timestamp") or msg.get("timestamp") or change.get("source_ts_ms"))
         full = asm.full_l1(source_ts_ms=source_ts_ms)

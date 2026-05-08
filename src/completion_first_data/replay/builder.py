@@ -220,18 +220,16 @@ class ReplayBuilder:
         state: Dict[Tuple[str, str], _DepthSideState],
     ) -> List[Tuple[str, _DepthSideState]]:
         raw = _json_dict(payload.get("raw_json")) or payload
+        updates: Dict[str, _DepthSideState] = {}
         raw_l2 = payload.get("raw_l2")
         if isinstance(raw_l2, dict):
-            updates: List[Tuple[str, _DepthSideState]] = []
             for raw_key, market_side in (("yes", "YES"), ("no", "NO")):
                 side_payload = raw_l2.get(raw_key)
                 if not isinstance(side_payload, dict):
                     continue
                 side_state = state.setdefault((condition_id, market_side), _DepthSideState())
                 side_state.replace_snapshot(bids=side_payload.get("bids"), asks=side_payload.get("asks"))
-                updates.append((market_side, side_state))
-            if updates:
-                return updates
+                updates[market_side] = side_state
 
         market_side = ReplayBuilder._infer_l2_market_side(
             condition_id=condition_id,
@@ -240,20 +238,21 @@ class ReplayBuilder:
             asset_side=asset_side,
         )
         if market_side not in {"YES", "NO"}:
-            return []
+            return list(updates.items())
 
         side_state = state.setdefault((condition_id, market_side), _DepthSideState())
         if isinstance(raw.get("bids"), list) or isinstance(raw.get("asks"), list):
             side_state.replace_snapshot(bids=raw.get("bids"), asks=raw.get("asks"))
-            return [(market_side, side_state)]
+            updates[market_side] = side_state
+            return list(updates.items())
 
         order_side = normalize_direction(raw.get("side") or raw.get("book_side") or raw.get("order_side"))
         price = _as_float(raw.get("price"))
         size = _as_float(raw.get("size") or raw.get("amount"))
         if order_side in {"BUY", "SELL"} and price is not None and size is not None:
             side_state.update_level(order_side=order_side, price=float(price), size=max(0.0, float(size)))
-            return [(market_side, side_state)]
-        return []
+            updates[market_side] = side_state
+        return list(updates.items())
 
     @staticmethod
     def _insert_l2_snapshot(

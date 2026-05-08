@@ -128,6 +128,24 @@ class ReplayBuilderContractTests(unittest.TestCase):
                     "no_ask_sz": 12.0,
                     "source_ts_ms": recv_ms + 1,
                     "raw_market_side": "YES",
+                    "raw_l2": {
+                        "yes": {
+                            "bids": [
+                                {"price": "0.51", "size": "10"},
+                                {"price": "0.50", "size": "20"},
+                                {"price": "0.49", "size": "30"},
+                            ],
+                            "asks": [
+                                {"price": "0.52", "size": "11"},
+                                {"price": "0.53", "size": "21"},
+                                {"price": "0.54", "size": "31"},
+                            ],
+                        },
+                        "no": {
+                            "bids": [{"price": "0.48", "size": "9"}],
+                            "asks": [{"price": "0.49", "size": "12"}],
+                        },
+                    },
                     "raw_json": {
                         "asset_id": "yes",
                         "price": "0.51",

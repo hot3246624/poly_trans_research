@@ -163,6 +163,32 @@ class SidecarNormalizationTests(unittest.TestCase):
         self.assertEqual(payload["raw_l2"]["yes"]["bids"][0], {"price": 0.41, "size": 10.0})
         self.assertEqual(payload["raw_l2"]["no"]["asks"][0], {"price": 0.59, "size": 11.0})
 
+        price_change = {
+            "event_type": "price_change",
+            "timestamp": "1700000001002",
+            "price_changes": [
+                {
+                    "asset_id": "yes_tok",
+                    "timestamp": "1700000001002",
+                    "price": "0.42",
+                    "size": "13",
+                    "side": "SELL",
+                    "best_bid": "0.41",
+                    "best_ask": "0.42",
+                }
+            ],
+        }
+        pc_rows = normalize_market_ws_message(
+            price_change,
+            allowed_events=allowed_events,
+            asset_to_condition_id=asset_to_condition,
+            asset_to_market_side=asset_to_side,
+            assemblers=assemblers,
+        )
+        self.assertEqual(len(pc_rows), 1)
+        _, pc_payload, _ = pc_rows[0]
+        self.assertEqual(pc_payload["raw_l2"]["yes"]["asks"][0], {"price": 0.42, "size": 13.0})
+
         trade = {
             "event_type": "last_trade_price",
             "asset_id": "yes_tok",
