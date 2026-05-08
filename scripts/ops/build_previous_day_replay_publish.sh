@@ -57,4 +57,10 @@ run_cycle() {
 
 exec 9>"$REPLAY_LOCK_PATH"
 flock 9
+
+if [ -f "$PUBLISHED_DB" ] && [ "$FORCE_REBUILD" != "1" ]; then
+  echo "build_previous_day_replay_publish: published replay already exists for $TARGET_DAY after lock, skip"
+  exit 0
+fi
+
 run_cycle
