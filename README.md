@@ -42,12 +42,21 @@
 │   └── research.env.example
 ├── data/
 │   ├── raw/
-│   └── replay/
+│   ├── replay/
+│   ├── replay_published/
+│   ├── backtest_cache/
+│   └── verification_store/
 ├── docs/
 │   ├── PLAN_Codex.md
 │   ├── PLAN_Codex_New.md
 │   ├── RUNBOOK.md
 │   └── STRUCTURE.md
+├── legacy/tools/
+│   ├── analyze_trade.py
+│   ├── trade_analysis.py
+│   └── output_paths.py
+├── outputs/
+│   └── trade_analysis/
 └── src/completion_first_data/
 ```
 
@@ -333,21 +342,87 @@ python cfdata.py audit-startup --day <UTC-YYYY-MM-DD> \
 
 `md_book_l2` 是 replay 结构化深度表，不代表 maker queue truth。它能支持 top-N depth / clip pressure 分析，但不能证明自己的挂单排队成交。真实 maker fill 仍需要后续 `own_order_events / own_fill_events`。
 
+## 回测数据层
+
+多 agent 回测不要直接扫 `raw` 或大体积 `replay_published/*.sqlite`。当前标准分层是：
+
+- `replay_published/YYYY-MM-DD/crypto_5m.sqlite`：source of truth，用于构建 cache/store 和最终少量候选验证。
+- `backtest_cache/taker_buy_signal_core_v2_strict_l1/<label>`：严格 L1 对齐后的 taker-buy 搜索 cache，供并发参数搜索读取。
+- `verification_store/completion_unwind_event_store_v1/<label>`：completion / unwind / inventory 事件层，供 maker/inventory 相关研究读取。
+
+使用原则：
+
+- 搜索和 ranking 优先读 cache/store。
+- 其他 agent 不直接扫 `raw`、不反复全量扫 SQLite replay。
+- 最终入选策略必须回到 replay/source-of-truth 做验证；cache 只负责快速筛选，不替代最终验证。
+- 新增一天数据的顺序应是：当天 replay publish 完成后，先构建 strict V2 cache 和 completion unwind event store，再进入下一天重任务。
+
 ## 3 天运行建议
 
 后台命令与监控方式见 [docs/RUNBOOK.md](docs/RUNBOOK.md)。
 
-## Legacy 分析工具输出
+## 用户账户分析
 
-- 推荐入口：
+`legacy/tools/analyze_trade.py` 是单市场、单账户的诊断工具，用来查看某个钱包在一个 Polymarket 事件/市场里的公开成交、方向、仓位变化和可视化表格。它不是多日策略回测引擎，也不替代 strict V2 cache、completion unwind event store 或最终 replay 验证。
+
+推荐入口：
 
 ```bash
-uv run python legacy/tools/analyze_trade.py "https://polymarket.com/event/..." --user 0x...
+uv run python legacy/tools/analyze_trade.py "https://polymarket.com/event/..." --user 0x... --source auto
 ```
 
-- `analyze_trade.py` 支持 Polymarket URL、slug、conditionId 或市场名，默认会记住最近一次使用的钱包地址，并打开生成的 `analysis_table.html`
-- 默认 `--source auto`：只有目标地址匹配本地 CLOB funder 时才尝试 authenticated execution view；否则使用 public canonical view
-- 可用 `--source public|authenticated` 固定数据源，`--refresh` 绕过缓存，`--no-open` 只生成文件不打开
-- `chartgenerator.py` 与 `interactive_chart.py` 的产出统一写到 `outputs/trade_analysis/`
-- 每次运行会创建独立目录，目录名包含市场标识、账户摘要与运行时间
-- 典型产物：`trades.json`、`fetch_meta.json`、`chart.html`、`analysis_table.html`、`chart.png`、`report.txt`
+可接受的市场参数包括 Polymarket URL、slug、conditionId 或市场名。`--user` 不传时，工具会优先使用 `POLYMARKET_FUNDER_ADDRESS` / `ETHEREUM_ADDRESS`，再回退到最近一次使用的钱包地址。
+
+### 数据源选择
+
+默认 `--source auto`：
+
+- 如果目标地址匹配本地配置的 CLOB funder，并且 CLOB credentials 可用，工具使用 authenticated execution view。
+- 否则使用 public canonical view。
+
+显式数据源：
+
+```bash
+# 分析第三方或 xuan 公开账户；适合公开成交诊断
+uv run python legacy/tools/analyze_trade.py "btc-up-or-down-may-..." --user 0x... --source public --refresh --no-open
+
+# 分析我方账户执行真值；要求本地 CLOB credentials 与目标 funder 匹配
+uv run python legacy/tools/analyze_trade.py "https://polymarket.com/event/..." --user 0x... --source authenticated --no-open
+```
+
+数据源边界必须看清：
+
+- `public` / `auto` public fallback 来自 Polymarket public Data API，可用于 xuan 或第三方钱包的公开成交分析，但不能证明对方私有挂单、撤单、排队优先级或完整库存路径。
+- `authenticated` 只适合我方账户执行诊断，依赖本地 CLOB credentials；它看到的是我方 execution view，不会让我们看到其他人的私有订单真值。
+- `public + user truth` 采集到的是我方 `own_order_events / own_fill_events / own_inventory_events`，不能事后补成任意第三方账户 truth。
+- `xuan public truth` 只能来自 xuan 的公开 trades/activity/poll 数据，不能替代 xuan 的私有 maker queue truth。
+
+### 输出与缓存
+
+每次运行会在 `outputs/trade_analysis/` 下创建独立目录，目录名包含市场标识、账户摘要与运行时间。典型产物：
+
+- `trades.json`
+- `fetch_meta.json`
+- `chart.html`
+- `analysis_table.html`
+- 旧图表链路可能额外生成 `chart.png`、`report.txt`
+
+分析结论前必须先看 `fetch_meta.json`：
+
+- `data_source`
+- `view_mode`
+- `warnings`
+- 是否命中 cache
+
+缓存位于 `outputs/trade_analysis/_cache/`。常用参数：
+
+- `--refresh`：重新拉取并更新缓存。
+- `--no-cache`：完全绕过缓存。
+- `--no-open`：只生成文件，不打开浏览器。
+
+### 何时用哪个入口
+
+- 单市场、单账户人工诊断：用 `legacy/tools/analyze_trade.py`。
+- 多 agent 参数搜索：用 `backtest_cache/taker_buy_signal_core_v2_strict_l1/<label>`。
+- maker / inventory / completion-unwind 搜索：用 `verification_store/completion_unwind_event_store_v1/<label>`。
+- 最终候选确认：用 replay/source-of-truth 验证队列，不能只凭账户分析或 cache 搜索结果部署。
