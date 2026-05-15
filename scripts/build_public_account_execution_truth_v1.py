@@ -403,6 +403,79 @@ def build_duckdb(tmp_dir: Path, csv_paths: list[Path], threads: int) -> dict[str
     }
 
 
+def build_market_events_cached(
+    *,
+    conn: Any,
+    day: str,
+    market: base.Market,
+    activity_rows: list[dict[str, Any]],
+    public_trades: list[base.PublicTrade],
+    query_start_ms: int,
+    query_end_ms: int,
+    account_wallet: str,
+    public_match_window_ms: int,
+    next_book_window_ms: int,
+    price_tol: float,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Build account events with per-market L1/L2 caches.
+
+    The xuan builder was designed for sparse account events and can query
+    SQLite per event. B27/RWO can have tens of thousands of public activity rows
+    per day, so we preload only the relevant market window and let the existing
+    builder call in-memory replacements for strict/next book lookup.
+    """
+    l1_books = base.load_l1(conn, market, query_start_ms, query_end_ms)
+    l1_times = [book.recv_ms for book in l1_books]
+    l2_by_side = base.load_l2(conn, market, query_start_ms, query_end_ms + next_book_window_ms)
+    l2_times = {side: [book.recv_ms for book in books] for side, books in l2_by_side.items()}
+
+    old_l1 = base.query_l1_at
+    old_l2 = base.query_l2_at
+    old_l2_after = base.query_l2_after
+
+    def query_l1_cached(_conn: Any, _condition_id: str, ts_ms: int) -> tuple[base.L1Book | None, int | None]:
+        return base.prev_by_time(l1_books, l1_times, ts_ms)
+
+    def query_l2_cached(_conn: Any, _condition_id: str, side: str, ts_ms: int) -> tuple[base.L2Book | None, int | None]:
+        books = l2_by_side.get(side, [])
+        times = l2_times.get(side, [])
+        return base.prev_by_time(books, times, ts_ms)
+
+    def query_l2_after_cached(
+        _conn: Any,
+        _condition_id: str,
+        side: str,
+        ts_ms: int,
+        max_wait_ms: int,
+    ) -> tuple[base.L2Book | None, int | None]:
+        books = l2_by_side.get(side, [])
+        times = l2_times.get(side, [])
+        return base.next_by_time(books, times, ts_ms, max_wait_ms)
+
+    base.query_l1_at = query_l1_cached
+    base.query_l2_at = query_l2_cached
+    base.query_l2_after = query_l2_after_cached
+    try:
+        return base.build_market_events(
+            conn=conn,
+            day=day,
+            market=market,
+            activity_rows=activity_rows,
+            xuan_trades=[],
+            public_trades=public_trades,
+            l1_books=l1_books,
+            l2_by_side=l2_by_side,
+            xuan_user=account_wallet,
+            public_match_window_ms=public_match_window_ms,
+            next_book_window_ms=next_book_window_ms,
+            price_tol=price_tol,
+        )
+    finally:
+        base.query_l1_at = old_l1
+        base.query_l2_at = old_l2
+        base.query_l2_after = old_l2_after
+
+
 def close_writer(writer: csv.DictWriter[str]) -> None:
     handle = getattr(writer, "_xuan_handle", None)
     if handle is not None:
@@ -559,16 +632,15 @@ def main() -> int:
                                     query_start_ms - args.public_match_window_ms,
                                     query_end_ms + args.public_match_window_ms,
                                 )
-                                rows, counts = base.build_market_events(
+                                rows, counts = build_market_events_cached(
                                     conn=conn,
                                     day=day,
                                     market=market,
                                     activity_rows=activity_rows,
-                                    xuan_trades=[],
                                     public_trades=public_trades,
-                                    l1_books=[],
-                                    l2_by_side={"YES": [], "NO": []},
-                                    xuan_user=wallet,
+                                    query_start_ms=query_start_ms,
+                                    query_end_ms=query_end_ms,
+                                    account_wallet=wallet,
                                     public_match_window_ms=args.public_match_window_ms,
                                     next_book_window_ms=args.next_book_window_ms,
                                     price_tol=args.price_tol,
