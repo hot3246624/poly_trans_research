@@ -11,6 +11,7 @@ import requests
 
 from ..constants import (
     POLYMARKET_GAMMA_EVENTS_URL,
+    POLYMARKET_GAMMA_MARKETS_URL,
     POLYMARKET_DATA_TRADES_URL,
     ROUND_INTERVAL_TARGET_SEC,
     ROUND_INTERVAL_MIN_SEC,
@@ -41,6 +42,8 @@ _SYMBOL_MAP = {
     "solana": "SOL",
     "dogecoin": "DOGE",
 }
+
+_DIRECT_5M_SYMBOLS = ("btc", "eth", "sol", "xrp", "doge", "bnb", "hype", "sui")
 
 
 @dataclasses.dataclass(slots=True)
@@ -271,6 +274,76 @@ def fetch_crypto_5m_markets(
             break
         offset += page_size
 
+    if active_only:
+        now = now_unix_ms()
+        near = [
+            rec
+            for rec in out
+            if rec.end_ms >= now - (10 * 60 * 1000)
+            and rec.start_ms <= now + (20 * 60 * 1000)
+        ]
+        if near:
+            return near
+
+        direct = _fetch_direct_crypto_5m_markets(session, now_ms=now)
+        if direct:
+            LOG.warning(
+                "gamma active crypto event listing returned no near-current 5m markets; "
+                "using direct slug fallback count=%d stale_count=%d",
+                len(direct),
+                len(out),
+            )
+            return direct
+
+        if out:
+            LOG.warning(
+                "gamma active crypto event listing returned only stale 5m markets and direct fallback found none; "
+                "dropping stale market selection count=%d",
+                len(out),
+            )
+            return []
+
+    return out
+
+
+def _fetch_direct_crypto_5m_markets(
+    session: requests.Session,
+    *,
+    now_ms: Optional[int] = None,
+) -> List[MarketMetaRecord]:
+    """Fetch near-current 5m markets by deterministic slug.
+
+    Gamma's broad `events?tag_slug=crypto&active=true` listing can occasionally
+    return stale crypto up/down events. The 5m market slug contains the round
+    start timestamp, so direct slug lookups are a compact recovery path for the
+    live capture subscription.
+    """
+    now = now_unix_ms() if now_ms is None else int(now_ms)
+    current_start_s = (now // 1000 // ROUND_INTERVAL_TARGET_SEC) * ROUND_INTERVAL_TARGET_SEC
+    out: List[MarketMetaRecord] = []
+    seen: set[str] = set()
+
+    for sym in _DIRECT_5M_SYMBOLS:
+        for offset in (-1, 0, 1, 2):
+            slug = f"{sym}-updown-5m-{current_start_s + offset * ROUND_INTERVAL_TARGET_SEC}"
+            try:
+                resp = session.get(POLYMARKET_GAMMA_MARKETS_URL, params={"slug": slug}, timeout=10)
+                resp.raise_for_status()
+                payload = resp.json()
+            except requests.RequestException:
+                continue
+            if not isinstance(payload, list):
+                continue
+            for market in payload:
+                if not isinstance(market, dict):
+                    continue
+                if not _looks_like_crypto_5m_market(market):
+                    continue
+                rec = normalize_market_meta(market)
+                if rec is None or rec.condition_id in seen:
+                    continue
+                seen.add(rec.condition_id)
+                out.append(rec)
     return out
 
 
