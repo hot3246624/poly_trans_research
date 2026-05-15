@@ -10,6 +10,7 @@ market truth for strict L1/L2 context, public trade matching, and settlement.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import datetime as dt
 import fcntl
@@ -476,6 +477,48 @@ def build_market_events_cached(
         base.query_l2_after = old_l2_after
 
 
+def build_market_result(conn: Any, task: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, int]]:
+    market = task["market"]
+    public_trades = base.load_public_trades(
+        conn,
+        task["condition_id"],
+        task["query_start_ms"] - task["public_match_window_ms"],
+        task["query_end_ms"] + task["public_match_window_ms"],
+    )
+    rows, counts = build_market_events_cached(
+        conn=conn,
+        day=task["day"],
+        market=market,
+        activity_rows=task["activity_rows"],
+        public_trades=public_trades,
+        query_start_ms=task["query_start_ms"],
+        query_end_ms=task["query_end_ms"],
+        account_wallet=task["account_wallet"],
+        public_match_window_ms=task["public_match_window_ms"],
+        next_book_window_ms=task["next_book_window_ms"],
+        price_tol=task["price_tol"],
+    )
+    return task["condition_id"], rows, dict(counts)
+
+
+def build_market_result_worker(task: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, int]]:
+    with base.connect_ro(Path(task["db_path"])) as conn:
+        return build_market_result(conn, task)
+
+
+def iter_market_results(
+    conn: Any,
+    tasks: list[dict[str, Any]],
+    workers: int,
+) -> Any:
+    if workers > 1 and len(tasks) > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            yield from executor.map(build_market_result_worker, tasks, chunksize=1)
+    else:
+        for task in tasks:
+            yield build_market_result(conn, task)
+
+
 def close_writer(writer: csv.DictWriter[str]) -> None:
     handle = getattr(writer, "_xuan_handle", None)
     if handle is not None:
@@ -507,6 +550,7 @@ def main() -> int:
     parser.add_argument("--price-tol", type=float, default=1e-9)
     parser.add_argument("--min-free-gb", type=float, default=120.0)
     parser.add_argument("--duckdb-threads", type=int, default=2)
+    parser.add_argument("--market-workers", type=int, default=1)
     parser.add_argument("--progress-every-markets", type=int, default=25)
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=20)
@@ -613,9 +657,8 @@ def main() -> int:
                             day_counts["activity_rows"] = len(activity)
                             day_counts["matched_activity_rows"] = sum(len(v) for v in activity_rows_by_condition.values())
                             day_counts["markets_with_activity"] = len(activity_rows_by_condition)
-                            for idx, (condition_id, activity_rows) in enumerate(
-                                sorted(activity_rows_by_condition.items()), start=1
-                            ):
+                            market_tasks: list[dict[str, Any]] = []
+                            for condition_id, activity_rows in sorted(activity_rows_by_condition.items()):
                                 market = markets[condition_id]
                                 event_times = [int(row["activity_ts_ms"]) for row in activity_rows]
                                 query_start_ms = max(
@@ -626,25 +669,25 @@ def main() -> int:
                                     market.end_ms,
                                     max(event_times) + args.next_book_window_ms + 5_000,
                                 )
-                                public_trades = base.load_public_trades(
-                                    conn,
-                                    condition_id,
-                                    query_start_ms - args.public_match_window_ms,
-                                    query_end_ms + args.public_match_window_ms,
+                                market_tasks.append(
+                                    {
+                                        "db_path": str(db_path),
+                                        "day": day,
+                                        "condition_id": condition_id,
+                                        "market": market,
+                                        "activity_rows": activity_rows,
+                                        "query_start_ms": query_start_ms,
+                                        "query_end_ms": query_end_ms,
+                                        "account_wallet": wallet,
+                                        "public_match_window_ms": args.public_match_window_ms,
+                                        "next_book_window_ms": args.next_book_window_ms,
+                                        "price_tol": args.price_tol,
+                                    }
                                 )
-                                rows, counts = build_market_events_cached(
-                                    conn=conn,
-                                    day=day,
-                                    market=market,
-                                    activity_rows=activity_rows,
-                                    public_trades=public_trades,
-                                    query_start_ms=query_start_ms,
-                                    query_end_ms=query_end_ms,
-                                    account_wallet=wallet,
-                                    public_match_window_ms=args.public_match_window_ms,
-                                    next_book_window_ms=args.next_book_window_ms,
-                                    price_tol=args.price_tol,
-                                )
+
+                            for idx, (_condition_id, rows, counts) in enumerate(
+                                iter_market_results(conn, market_tasks, args.market_workers), start=1
+                            ):
                                 for row in rows:
                                     row["account_label"] = account_label
                                     row["account_wallet"] = wallet
