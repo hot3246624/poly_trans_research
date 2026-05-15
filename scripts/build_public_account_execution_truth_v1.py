@@ -434,12 +434,12 @@ def build_market_events_cached(
     old_l2_after = base.query_l2_after
 
     def query_l1_cached(_conn: Any, _condition_id: str, ts_ms: int) -> tuple[base.L1Book | None, int | None]:
-        return base.prev_by_time(l1_books, l1_times, ts_ms)
+        return base.latest_by_time(l1_books, l1_times, ts_ms)
 
     def query_l2_cached(_conn: Any, _condition_id: str, side: str, ts_ms: int) -> tuple[base.L2Book | None, int | None]:
         books = l2_by_side.get(side, [])
         times = l2_times.get(side, [])
-        return base.prev_by_time(books, times, ts_ms)
+        return base.latest_by_time(books, times, ts_ms)
 
     def query_l2_after_cached(
         _conn: Any,
