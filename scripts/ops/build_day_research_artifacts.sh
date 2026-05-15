@@ -20,6 +20,7 @@ fi
 REPLAY_ROOT="$DATA_ROOT/data/replay_published"
 CACHE_ROOT="$DATA_ROOT/data/backtest_cache"
 STORE_ROOT="$DATA_ROOT/data/verification_store"
+ARTIFACT_BLOCKLIST_PATH="${POLYTRANS_RESEARCH_ARTIFACT_BLOCKLIST:-$DATA_ROOT/data/research_artifacts_blocklist.txt}"
 LOCK_PATH="${POLYTRANS_ARTIFACT_LOCK_PATH:-$DATA_ROOT/data/locks/research_artifacts_${LABEL}.lock}"
 V1_CACHE="$CACHE_ROOT/taker_buy_signal_core_v1_strict_l1/$LABEL"
 V2_CACHE="$CACHE_ROOT/taker_buy_signal_core_v2_strict_l1/$LABEL"
@@ -41,6 +42,26 @@ try:
 except Exception:
     raise SystemExit(1)
 raise SystemExit(0 if int(payload.get("error_count", -1)) == 0 else 1)
+PY
+}
+
+is_blocked_artifact_day() {
+  [ -f "$ARTIFACT_BLOCKLIST_PATH" ] || return 1
+  python3 - "$ARTIFACT_BLOCKLIST_PATH" "$TARGET_DAY" "$LABEL" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target_day = sys.argv[2]
+label = sys.argv[3]
+
+blocked = set()
+for raw in path.read_text().splitlines():
+    line = raw.split("#", 1)[0].strip()
+    if line:
+        blocked.add(line)
+
+raise SystemExit(0 if target_day in blocked or label in blocked else 1)
 PY
 }
 
@@ -140,6 +161,11 @@ mkdir -p "$(dirname "$LOCK_PATH")"
 exec 9>"$LOCK_PATH"
 if ! flock -n 9; then
   echo "build_day_research_artifacts: artifact lock busy for $LABEL, skip"
+  exit 0
+fi
+
+if is_blocked_artifact_day; then
+  echo "build_day_research_artifacts: target_day=$TARGET_DAY label=$LABEL is blocked by $ARTIFACT_BLOCKLIST_PATH, skip"
   exit 0
 fi
 

@@ -5,6 +5,7 @@ ROOT_DIR="${POLYTRANS_ROOT_DIR:-$HOME/poly_trans_research}"
 SRC_DIR="${POLYTRANS_REPLAY_SRC_DIR:-$ROOT_DIR/data/replay}"
 PUBLISH_DIR="${POLYTRANS_REPLAY_PUBLISH_DIR:-$ROOT_DIR/data/replay_published}"
 HOT_DAYS="${POLYTRANS_REPLAY_PUBLISH_HOT_DAYS:-1}"
+PUBLISH_BLOCKLIST_PATH="${POLYTRANS_REPLAY_PUBLISH_BLOCKLIST:-$ROOT_DIR/data/research_artifacts_blocklist.txt}"
 
 mkdir -p "$PUBLISH_DIR"
 
@@ -17,6 +18,27 @@ is_hot_day() {
     fi
   done
   return 1
+}
+
+is_blocked_day() {
+  local day="$1"
+  [ -f "$PUBLISH_BLOCKLIST_PATH" ] || return 1
+  python3 - "$PUBLISH_BLOCKLIST_PATH" "$day" "${day//-/}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target_day = sys.argv[2]
+label = sys.argv[3]
+
+blocked = set()
+for raw in path.read_text().splitlines():
+    line = raw.split("#", 1)[0].strip()
+    if line:
+        blocked.add(line)
+
+raise SystemExit(0 if target_day in blocked or label in blocked else 1)
+PY
 }
 
 is_publishable_sqlite() {
@@ -39,7 +61,7 @@ for published_dir in "$PUBLISH_DIR"/20??-??-??; do
   [ -d "$published_dir" ] || continue
   day="$(basename "$published_dir")"
   src_db="$SRC_DIR/$day/crypto_5m.sqlite"
-  if is_hot_day "$day" || ! is_publishable_sqlite "$src_db"; then
+  if is_blocked_day "$day" || is_hot_day "$day" || ! is_publishable_sqlite "$src_db"; then
     rm -rf "$published_dir"
     removed=$((removed + 1))
   fi
@@ -50,6 +72,10 @@ for replay_day_dir in "$SRC_DIR"/20??-??-??; do
   day="$(basename "$replay_day_dir")"
   src_db="$replay_day_dir/crypto_5m.sqlite"
   [ -f "$src_db" ] || continue
+  if is_blocked_day "$day"; then
+    skipped_not_ready=$((skipped_not_ready + 1))
+    continue
+  fi
   if is_hot_day "$day"; then
     continue
   fi
