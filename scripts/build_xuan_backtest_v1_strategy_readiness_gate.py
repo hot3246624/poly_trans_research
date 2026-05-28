@@ -28,6 +28,13 @@ DEFAULT_MULTIASSET_STRICT_RESCUE = (
 DEFAULT_MULTIASSET_MERGE_TURNOVER = (
     DEFAULT_CONTRACT / "multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json"
 )
+DEFAULT_COVERAGE_SCORECARD = (
+    DEFAULT_CONTRACT / "multiasset_backtest_coverage_scorecard_latest/MULTIASSET_BACKTEST_COVERAGE_SCORECARD.json"
+)
+DEFAULT_CANDIDATE_RESCORE = (
+    DEFAULT_CONTRACT / "xuan_completion_candidate_rescore_latest/XUAN_COMPLETION_CANDIDATE_RESCORE_MANIFEST.json"
+)
+DEFAULT_CAPITAL_LEDGER = DEFAULT_CONTRACT / "xuan_capital_ledger_latest/XUAN_CAPITAL_LEDGER_REPORT.json"
 
 
 def utc_now() -> str:
@@ -47,6 +54,9 @@ def main() -> int:
     parser.add_argument("--multiasset-completion-manifest", type=Path, default=DEFAULT_MULTIASSET_COMPLETION)
     parser.add_argument("--multiasset-strict-rescue-report", type=Path, default=DEFAULT_MULTIASSET_STRICT_RESCUE)
     parser.add_argument("--multiasset-merge-turnover-report", type=Path, default=DEFAULT_MULTIASSET_MERGE_TURNOVER)
+    parser.add_argument("--coverage-scorecard", type=Path, default=DEFAULT_COVERAGE_SCORECARD)
+    parser.add_argument("--xuan-candidate-rescore", type=Path, default=DEFAULT_CANDIDATE_RESCORE)
+    parser.add_argument("--xuan-capital-ledger", type=Path, default=DEFAULT_CAPITAL_LEDGER)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -66,6 +76,9 @@ def main() -> int:
     multiasset_completion = read_json(args.multiasset_completion_manifest.expanduser())
     multiasset_strict_rescue = read_json(args.multiasset_strict_rescue_report.expanduser())
     multiasset_merge_turnover = read_json(args.multiasset_merge_turnover_report.expanduser())
+    coverage_scorecard = read_json(args.coverage_scorecard.expanduser())
+    candidate_rescore = read_json(args.xuan_candidate_rescore.expanduser())
+    capital_ledger = read_json(args.xuan_capital_ledger.expanduser())
 
     install_summary = install.get("summary") or {}
     bridge_summary = xuan_bridge.get("summary") or {}
@@ -88,6 +101,13 @@ def main() -> int:
     strict_rescue_ready = multiasset_strict_rescue.get("status") == "OK_MULTIASSET_STRICT_RESCUE_OPPORTUNITY_READY"
     merge_turnover_ready = multiasset_merge_turnover.get("status") == "OK_MULTIASSET_MERGE_TURNOVER_READY"
     residual_risk_ready = completion_adapter_ready and merge_turnover_ready
+    coverage_scorecard_ready = (
+        coverage_scorecard.get("status") == "OK_MULTIASSET_BACKTEST_COVERAGE_SCORECARD_READY"
+    )
+    xuan_candidate_rescore_ready = (
+        candidate_rescore.get("status") == "OK_XUAN_COMPLETION_CANDIDATE_RESCORE_READY"
+    )
+    capital_ledger_ready = capital_ledger.get("status") == "OK_XUAN_CAPITAL_LEDGER_READY"
     xuan_bridge_complete = xuan_bridge.get("status") == "OK_XUAN_BRIDGE_COMPLETE"
     private_truth_ready = False
 
@@ -105,6 +125,12 @@ def main() -> int:
         blockers.append("multiasset_merge_turnover_not_ready")
     if not residual_risk_ready:
         blockers.append("residual_risk_split_not_ready")
+    if not coverage_scorecard_ready:
+        blockers.append("multiasset_coverage_scorecard_not_ready")
+    if not xuan_candidate_rescore_ready:
+        blockers.append("xuan_completion_candidate_rescore_not_ready")
+    if not capital_ledger_ready:
+        blockers.append("xuan_capital_ledger_not_ready")
     if not btc_parity_proven:
         warnings.append("btc_baseline_parity_not_proven")
     if not source_semantics_accepted:
@@ -121,6 +147,9 @@ def main() -> int:
         and strict_rescue_ready
         and merge_turnover_ready
         and residual_risk_ready
+        and coverage_scorecard_ready
+        and xuan_candidate_rescore_ready
+        and capital_ledger_ready
     )
     strategy_research_readiness_level = (
         "partial"
@@ -152,6 +181,9 @@ def main() -> int:
         "strict_rescue_ready": strict_rescue_ready,
         "merge_turnover_ready": merge_turnover_ready,
         "residual_risk_ready": residual_risk_ready,
+        "coverage_scorecard_ready": coverage_scorecard_ready,
+        "xuan_candidate_rescore_ready": xuan_candidate_rescore_ready,
+        "capital_ledger_ready": capital_ledger_ready,
         "xuan_bridge_complete": xuan_bridge_complete,
         "private_truth_ready": private_truth_ready,
         "private_promotion_ready_count": 0,
@@ -175,6 +207,16 @@ def main() -> int:
             "multiasset_completion_status": multiasset_completion.get("status") or "MISSING",
             "multiasset_strict_rescue_status": multiasset_strict_rescue.get("status") or "MISSING",
             "multiasset_merge_turnover_status": multiasset_merge_turnover.get("status") or "MISSING",
+            "coverage_scorecard_status": coverage_scorecard.get("status") or "MISSING",
+            "xuan_candidate_rescore_status": candidate_rescore.get("status") or "MISSING",
+            "positive_xuan_candidate_count": (candidate_rescore.get("summary") or {}).get(
+                "positive_xuan_candidate_count"
+            ),
+            "capital_ledger_status": capital_ledger.get("status") or "MISSING",
+            "max_capital_tied": (capital_ledger.get("summary") or {}).get("max_capital_tied"),
+            "daily_capacity_estimate_at_1000": (capital_ledger.get("summary") or {}).get(
+                "daily_capacity_estimate_at_notional"
+            ),
         },
         "blockers": blockers,
         "warnings": warnings,
@@ -183,6 +225,15 @@ def main() -> int:
             "redeem_is_settlement_action_not_strategy_edge": True,
             "historical_shadow_private_truth_can_be_inferred": False,
             "promotion_requires_future_owner_execution_truth": True,
+            "candidate_handoff_flow": [
+                "search-safe candidate",
+                "same-window L2/top-aligned validation",
+                "xuan completion/residual rescore",
+                "future owner canary/live-small execution",
+                "owner orders/fills/inventory/redeem/fee reconciliation",
+                "private truth gate",
+            ],
+            "historical_shadow_can_skip_owner_truth_gate": False,
         },
         "inputs": {
             "install_gate": str(args.install_gate.expanduser()),
@@ -192,6 +243,9 @@ def main() -> int:
             "multiasset_completion_manifest": str(args.multiasset_completion_manifest.expanduser()),
             "multiasset_strict_rescue_report": str(args.multiasset_strict_rescue_report.expanduser()),
             "multiasset_merge_turnover_report": str(args.multiasset_merge_turnover_report.expanduser()),
+            "coverage_scorecard": str(args.coverage_scorecard.expanduser()),
+            "xuan_candidate_rescore": str(args.xuan_candidate_rescore.expanduser()),
+            "xuan_capital_ledger": str(args.xuan_capital_ledger.expanduser()),
         },
     }
     manifest_path = output_dir / "XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json"

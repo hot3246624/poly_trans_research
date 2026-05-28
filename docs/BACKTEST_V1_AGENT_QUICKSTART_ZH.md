@@ -61,6 +61,15 @@ $POLY_BT_ROOT/derived/contract_examples/multiasset_strict_rescue_opportunity_lat
 multiasset merge/residual turnover:
 $POLY_BT_ROOT/derived/contract_examples/multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json
 
+xuan completion/residual rescore:
+$POLY_BT_ROOT/derived/contract_examples/xuan_completion_candidate_rescore_latest/XUAN_COMPLETION_CANDIDATE_RESCORE_MANIFEST.json
+
+xuan capital ledger:
+$POLY_BT_ROOT/derived/contract_examples/xuan_capital_ledger_latest/XUAN_CAPITAL_LEDGER_REPORT.json
+
+multiasset coverage scorecard:
+$POLY_BT_ROOT/derived/contract_examples/multiasset_backtest_coverage_scorecard_latest/MULTIASSET_BACKTEST_COVERAGE_SCORECARD.json
+
 xuan strategy readiness gate:
 $POLY_BT_ROOT/derived/contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json
 ```
@@ -80,8 +89,17 @@ jq '{status, core_metrics}' \
 jq '{status, summary, blockers}' \
   $POLY_BT_ROOT/derived/contract_examples/backtest_v1_btc_parity_latest/BACKTEST_V1_BTC_PARITY_GATE.json
 
+column -s, -t < \
+  $POLY_BT_ROOT/derived/contract_examples/backtest_v1_btc_parity_latest/btc_parity_field_alignment.csv | head -20
+
 jq '{status, summary, interpretation}' \
   $POLY_BT_ROOT/derived/contract_examples/xuan_bridge_scorecard_latest/XUAN_BRIDGE_SCORECARD_MANIFEST.json
+
+jq '{status, summary}' \
+  $POLY_BT_ROOT/derived/contract_examples/xuan_completion_candidate_rescore_latest/XUAN_COMPLETION_CANDIDATE_RESCORE_MANIFEST.json
+
+jq '{status, summary}' \
+  $POLY_BT_ROOT/derived/contract_examples/xuan_capital_ledger_latest/XUAN_CAPITAL_LEDGER_REPORT.json
 
 jq '{status, strategy_research_ready, strategy_research_readiness_level, strategy_promotion_ready, warnings}' \
   $POLY_BT_ROOT/derived/contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json
@@ -102,10 +120,15 @@ uv run --with duckdb python scripts/run_backtest_matrix_batch.py \
 ## 6. 口径边界
 
 - `best_queue_pnl` 只是 search-safe queue screener 指标，不等于 xuan 完整策略 PnL。
+- 当前 canonical audit pack 是 `backtest_candidate_audit_pack_with_l2_evidence_latest`，selected count=80；旧 `backtest_candidate_audit_pack_latest` selected count=6 只是兼容产物。
 - xuan 口径要看 `xuan_bridge_scorecard` 和 `xuan strategy readiness gate`。Scorecard 的 `bridge_category` 分为 `queue_screener_search_safe`、`completion_adapter_research`、`xuan_compatible_bridge`；A 类不能用于判断 xuan 策略好坏。
+- 候选导入前先看 `xuan_completion_candidate_rescore`，它按 `pair_pnl + residual_settlement_pnl - fee` 重打分，不使用 queue PnL。
+- 资金效率先看 `xuan_capital_ledger`：`max_capital_tied`、`average_capital_tied`、`fee_drag`、`turnover_adjusted_roi`、`daily_capacity_estimate_at_notional`。
+- 多币种不能等权解释，先看 coverage scorecard 的 `search_safe_row_count/market_count/day_count/selected_count/pair_qty/residual_qty/net_roi/stress_worst_day`。
 - merge/redeem turnover 必须和 residual 风险分开：`paired_mergeable_qty/cost`、`merge_recovered_capital`、`capital_turnover` 是资金复用；`market_end_residual_qty/cost`、`residual_zero_stress_loss`、`actual_settlement_residual_pnl` 是 residual 归因。
 - BTC parity gate 当前预期仍是 `BLOCKED_BTC_BASELINE_PARITY_NOT_PROVEN`。这是已知边界，不是安装失败。
 - 历史 shadow/no-order 没有 owner private truth，不能标记 `private_truth_ready=true`。
+- future owner truth 流程固定为 `candidate -> same-window L2/top-aligned validation -> xuan rescore -> canary/live-small owner execution -> owner truth reconciliation -> private truth gate`。
 - L2 使用 `md_book_l2_top_aligned`：L1 canonical top + L2 depth/provenance。不要把 raw `md_book_l2` side snapshot 当作 top-of-book truth。
 - 当前总 gate 预期是 `PARTIAL_XUAN_BACKTEST_V1_STRATEGY_RESEARCH_READY_NOT_PROMOTION`；可以用于研究推进，不能 promotion/deploy/live。
 

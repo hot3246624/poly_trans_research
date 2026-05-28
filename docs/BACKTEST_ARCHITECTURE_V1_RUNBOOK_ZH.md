@@ -591,6 +591,14 @@ status=OK
 private_promotion_ready_count=0
 ```
 
+`backtest_candidate_audit_pack_with_l2_evidence_latest` 是当前 canonical audit pack。旧的
+`backtest_candidate_audit_pack_latest` 只保留为 search-safe 兼容产物，因此会看到旧 selected count=6、
+canonical/current selected count=80。下游 agent 默认只读 with-L2 canonical manifest：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/backtest_candidate_audit_pack_with_l2_evidence_latest/BACKTEST_CANDIDATE_AUDIT_PACK_MANIFEST.json
+```
+
 ## Xuan 接入 gate
 
 ```bash
@@ -606,3 +614,81 @@ KEEP_XUAN_BACKTEST_V1_INTEGRATION_GATE_READY_LOCAL_ONLY
 ```
 
 该状态只说明 upstream search-safe screening layer 可用，不授权 candidate import、remote runner、deploy 或 live order。历史 shadow/no-order 不能补 owner private truth；只有未来受控 canary/live-small 的 owner order/fill/inventory/redeem/fee reconciliation 通过后，才可能进入 private truth ready。
+
+## Xuan 候选重打分、覆盖和资本账本
+
+Queue screener 的 `best_queue_pnl` 不能代表 xuan completion/residual 策略。正式研究入口要先把 market-level 候选按 xuan 口径重打分：
+
+```bash
+uv run --with duckdb python scripts/build_xuan_completion_candidate_rescore.py
+```
+
+当前期望：
+
+```text
+status=OK_XUAN_COMPLETION_CANDIDATE_RESCORE_READY
+market_candidate_count=17,337
+positive_xuan_candidate_count=13,409
+xuan_after_fee_pnl≈7,767.871711
+```
+
+该 report 使用：
+
+```text
+xuan_after_fee_pnl = pair_pnl + actual_settlement_residual_pnl - official_taker_fee
+```
+
+它不使用 queue PnL，不代表 private truth，也不允许直接导入 live candidate。
+
+生成 per-asset coverage scorecard：
+
+```bash
+uv run --with duckdb python scripts/build_multiasset_backtest_coverage_scorecard.py
+```
+
+每个资产必须看：
+
+```text
+search_safe_row_count
+search_safe_market_count
+search_safe_day_count
+selected_count
+pair_qty
+residual_qty
+net_roi
+stress_worst_day_fee_after_pnl
+```
+
+7 币种覆盖不等权。BTC 行数远高于 HYPE/BNB，因此不能把 7 个资产简单平均成策略证据。
+
+生成 capital ledger：
+
+```bash
+uv run --with duckdb python scripts/build_xuan_capital_ledger_report.py
+```
+
+当前期望：
+
+```text
+status=OK_XUAN_CAPITAL_LEDGER_READY
+max_capital_tied≈6,237.69375
+average_capital_tied≈3,129.587336
+fee_drag≈2,764.784539
+turnover_adjusted_roi_on_max_capital≈1.245311
+daily_capacity_estimate_at_notional($1000)≈83.020766
+```
+
+`daily_capacity_estimate_at_notional` 是 2026-05-02..2026-05-18 valid-day 全窗口按 day_count 归一后的研究代理，不是实盘承诺。它用于回答“给 1000 美金资本上限，大约能承载多少研究 PnL”，还必须经过 same-window handoff 和 owner private truth gate。
+
+未来 private truth 正式流程固定为：
+
+```text
+search-safe candidate
+same-window L2/top-aligned validation
+xuan completion/residual rescore
+future owner canary/live-small execution
+owner orders/fills/inventory/redeem/fee reconciliation
+private truth gate
+```
+
+历史 shadow/no-order 不能跳过 owner truth gate，也不能直接升级为 `private_truth_ready=true`。

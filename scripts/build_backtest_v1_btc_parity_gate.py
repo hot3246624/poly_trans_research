@@ -364,6 +364,107 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     ]
     metrics_csv = output_dir / "btc_parity_gate_metrics.csv"
     write_csv(metrics_csv, metrics_rows)
+    field_alignment_rows = [
+        {
+            "field": "source_event_contract",
+            "old_btc_baseline": "legacy completion candidate source over public_trade/l1_price_change",
+            "new_btc_normalized_adapter": "core replay md_trades normalized runner BUY events",
+            "parity_status": "NOT_EQUIVALENT_SOURCE_SEMANTICS",
+            "impact": "Candidate universe and timing differ; BTC parity cannot pass until source contract is accepted or normalized on both sides.",
+        },
+        {
+            "field": "runner_taker_side",
+            "old_btc_baseline": "SELL/mixed source-event semantics",
+            "new_btc_normalized_adapter": "BUY from core md_trades.taker_side",
+            "parity_status": "NOT_EQUIVALENT_SOURCE_SEMANTICS",
+            "impact": "Changes candidate count and selected-action ratio; this is the main blocker, not an install failure.",
+        },
+        {
+            "field": "candidate_count",
+            "old_btc_baseline": old_metrics.get("candidate_count"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("candidate_count"),
+            "parity_status": "DELTA_REQUIRES_SOURCE_ATTRIBUTION",
+            "impact": "New/old runner candidate ratio is recorded in BTC_SOURCE_SEMANTICS_DELTA_REPORT.",
+        },
+        {
+            "field": "selected_candidate_count",
+            "old_btc_baseline": old_metrics.get("selected_candidate_count") or old_manifest.get("row_count"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("selected_candidate_count"),
+            "parity_status": "DELTA_REQUIRES_SOURCE_ATTRIBUTION",
+            "impact": "State-machine parameters are comparable, but input source semantics are not yet equal.",
+        },
+        {
+            "field": "gross_buy_cost",
+            "old_btc_baseline": old_metrics.get("gross_buy_cost"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("gross_buy_cost"),
+            "parity_status": "COMPARABLE_METRIC_DELTA_NOT_PARITY",
+            "impact": "Gross-cost ROI is comparable as a research metric only.",
+        },
+        {
+            "field": "pair_qty",
+            "old_btc_baseline": old_metrics.get("pair_qty"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("pair_qty"),
+            "parity_status": "COMPARABLE_METRIC_DELTA_NOT_PARITY",
+            "impact": "Represents paired mergeable inventory, not residual settlement edge.",
+        },
+        {
+            "field": "pair_pnl",
+            "old_btc_baseline": old_metrics.get("pair_pnl"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("pair_pnl"),
+            "parity_status": "COMPARABLE_METRIC_DELTA_NOT_PARITY",
+            "impact": "Pair-completion PnL exists on both sides; residual/rescue/merge attribution remains separate.",
+        },
+        {
+            "field": "fee_after_pnl",
+            "old_btc_baseline": old_metrics.get("fee_after_pnl"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("fee_after_pnl"),
+            "parity_status": "COMPARABLE_METRIC_DELTA_NOT_PARITY",
+            "impact": "After-fee PnL exists on both sides but cannot prove source-event parity.",
+        },
+        {
+            "field": "residual_qty",
+            "old_btc_baseline": old_metrics.get("residual_qty"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("residual_qty"),
+            "parity_status": "COMPARABLE_RESIDUAL_RISK_FIELD",
+            "impact": "Market-end residual inventory risk; settlement outcome is attribution only.",
+        },
+        {
+            "field": "residual_cost",
+            "old_btc_baseline": old_metrics.get("residual_cost"),
+            "new_btc_normalized_adapter": v1_btc_sm_metrics.get("residual_cost"),
+            "parity_status": "COMPARABLE_RESIDUAL_RISK_FIELD",
+            "impact": "Used for residual stress and recovery analysis.",
+        },
+        {
+            "field": "merge_recovered_capital",
+            "old_btc_baseline": old_metrics.get("pair_qty"),
+            "new_btc_normalized_adapter": btc_merge_turnover_metrics.get("merge_recovered_capital")
+            or btc_merge_turnover_metrics.get("pair_merge_redeem_value"),
+            "parity_status": "MERGE_TURNOVER_COMPARABLE_NOT_SOURCE_MATCHED",
+            "impact": "Matched YES/NO pair redeem value; separated from residual risk.",
+        },
+        {
+            "field": "rounds_per_market",
+            "old_btc_baseline": old_metrics.get("rounds_per_market"),
+            "new_btc_normalized_adapter": btc_merge_turnover_metrics.get("rounds_per_market"),
+            "parity_status": "MERGE_TURNOVER_COMPARABLE_NOT_SOURCE_MATCHED",
+            "impact": "Turnover metric is available, but old/new source generation is still not matched.",
+        },
+        {
+            "field": "owner_private_truth",
+            "old_btc_baseline": False,
+            "new_btc_normalized_adapter": False,
+            "parity_status": "UNAVAILABLE_FOR_HISTORICAL_SHADOW",
+            "impact": "Historical public/proxy evidence cannot become owner private truth.",
+        },
+    ]
+    field_alignment_csv = output_dir / "btc_parity_field_alignment.csv"
+    with field_alignment_csv.open("w", newline="", encoding="utf-8") as f:
+        fieldnames = ["field", "old_btc_baseline", "new_btc_normalized_adapter", "parity_status", "impact"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in field_alignment_rows:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
     blockers = [
         "btc_source_taker_side_semantics_not_normalized_to_old_baseline",
@@ -507,7 +608,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "top_overlay_required_rate": l2_top.get("top_overlay_required_rate"),
             "contract": l2_top_aligned_contract,
         },
-        "outputs": {"metrics_csv": str(metrics_csv)},
+        "outputs": {
+            "metrics_csv": str(metrics_csv),
+            "field_alignment_csv": str(field_alignment_csv),
+        },
+        "btc_parity_field_alignment": field_alignment_rows,
         "blockers": blockers,
         "resolved_requirements": [
             "Local multiasset L2 tier is built." if l2_top_status == "OK" else "Local multiasset L2 tier is not ready.",

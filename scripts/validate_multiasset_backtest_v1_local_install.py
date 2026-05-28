@@ -72,6 +72,9 @@ EXPECTED_RUNNERS = (
     "scripts/build_btc_source_semantics_delta_report.py",
     "scripts/build_multiasset_strict_rescue_opportunity_report.py",
     "scripts/build_multiasset_merge_turnover_report.py",
+    "scripts/build_multiasset_backtest_coverage_scorecard.py",
+    "scripts/build_xuan_completion_candidate_rescore.py",
+    "scripts/build_xuan_capital_ledger_report.py",
     "scripts/build_xuan_backtest_v1_strategy_readiness_gate.py",
     "scripts/repair_replay_store_duckdb_view_paths.py",
     "scripts/validate_l1_from_l2_parity.py",
@@ -451,6 +454,12 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         / "contract_examples/multiasset_strict_rescue_opportunity_latest/MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT.json",
         "multiasset_merge_turnover": derived
         / "contract_examples/multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json",
+        "multiasset_coverage_scorecard": derived
+        / "contract_examples/multiasset_backtest_coverage_scorecard_latest/MULTIASSET_BACKTEST_COVERAGE_SCORECARD.json",
+        "xuan_completion_candidate_rescore": derived
+        / "contract_examples/xuan_completion_candidate_rescore_latest/XUAN_COMPLETION_CANDIDATE_RESCORE_MANIFEST.json",
+        "xuan_capital_ledger": derived
+        / "contract_examples/xuan_capital_ledger_latest/XUAN_CAPITAL_LEDGER_REPORT.json",
         "xuan_strategy_readiness_gate": derived
         / "contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json",
         "l2_validation_plan": derived
@@ -589,6 +598,15 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         "multiasset_merge_turnover": check_optional_report(
             paths["multiasset_merge_turnover"], issues, "multiasset_merge_turnover_report_v1"
         ),
+        "multiasset_coverage_scorecard": check_optional_report(
+            paths["multiasset_coverage_scorecard"], issues, "multiasset_backtest_coverage_scorecard_v1"
+        ),
+        "xuan_completion_candidate_rescore": check_optional_report(
+            paths["xuan_completion_candidate_rescore"], issues, "xuan_completion_candidate_rescore_v1"
+        ),
+        "xuan_capital_ledger": check_optional_report(
+            paths["xuan_capital_ledger"], issues, "xuan_capital_ledger_report_v1"
+        ),
         "xuan_strategy_readiness_gate": check_optional_report(
             paths["xuan_strategy_readiness_gate"], issues, "xuan_backtest_v1_strategy_readiness_gate_v1"
         ),
@@ -635,6 +653,9 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_source_semantics_delta",
             "multiasset_strict_rescue_opportunity",
             "multiasset_merge_turnover",
+            "multiasset_coverage_scorecard",
+            "xuan_completion_candidate_rescore",
+            "xuan_capital_ledger",
             "xuan_strategy_readiness_gate",
             "l2_validation_plan",
             "l1_from_l2_parity",
@@ -713,7 +734,18 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_source_semantics_delta_status": reports["btc_source_semantics_delta"].get("status"),
             "multiasset_strict_rescue_opportunity_status": reports["multiasset_strict_rescue_opportunity"].get("status"),
             "multiasset_merge_turnover_status": reports["multiasset_merge_turnover"].get("status"),
+            "multiasset_coverage_scorecard_status": reports["multiasset_coverage_scorecard"].get("status"),
+            "xuan_completion_candidate_rescore_status": reports["xuan_completion_candidate_rescore"].get("status"),
+            "xuan_capital_ledger_status": reports["xuan_capital_ledger"].get("status"),
             "xuan_strategy_readiness_gate_status": reports["xuan_strategy_readiness_gate"].get("status"),
+            "canonical_audit_manifest": str(paths["audit_with_l2_manifest"]),
+            "canonical_audit_selected_candidate_count": (
+                audit_with_l2.get("selected_candidate_count")
+                if audit_with_l2
+                else audit.get("selected_candidate_count") if audit else None
+            ),
+            "compat_audit_manifest": str(paths["audit_manifest"]),
+            "compat_audit_selected_candidate_count": audit.get("selected_candidate_count") if audit else None,
             "l2_validation_plan_status": reports["l2_validation_plan"].get("status"),
             "l1_from_l2_parity_status": reports["l1_from_l2_parity"].get("status"),
             "l2_top_aligned_mart_status": reports["l2_top_aligned_mart"].get("status"),
