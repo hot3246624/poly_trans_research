@@ -1,0 +1,24 @@
+{
+  "schema_version": "backtest_search_matrix_spec_v1",
+  "spec_name": "search_multiasset_l1_flow_matrix_formal_v1",
+  "base_spec": "configs/backtest/search_multiasset_l1_flow_7asset_smoke_contract.json",
+  "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/contract_examples/search_multiasset_l1_flow_matrix_formal_v1",
+  "assets": ["BNB", "BTC", "DOGE", "ETH", "HYPE", "SOL", "XRP"],
+  "matrix": {
+    "price_ranges": [[0.5, 0.55], [0.55, 0.6]],
+    "size_ranges": [[25.0, 100.0], [50.0, 150.0]],
+    "offset_ranges": [[0.0, 30.0], [0.0, 60.0]],
+    "max_l1_pair_asks": [1.1],
+    "max_l1_immediate_pairs": [1.5, 2.0],
+    "side_alignments": ["high"],
+    "pnl_cost_source": ["pair_ask"]
+  },
+  "parallel_runs": 4,
+  "parallel_shards": 4,
+  "shard_top_n": 12,
+  "matrix_top_n": 400,
+  "combine_top_n": 120,
+  "dry_run": false,
+  "skip_existing_ok": true,
+  "positioning": "multiasset_search_safe_screener_not_btc_completion_baseline"
+}

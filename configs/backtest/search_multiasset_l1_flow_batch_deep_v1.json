@@ -1,0 +1,16 @@
+{
+  "schema_version": "backtest_matrix_batch_spec_v1",
+  "spec_name": "search_multiasset_l1_flow_batch_deep_v1",
+  "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/contract_examples/search_multiasset_l1_flow_batch_deep_v1",
+  "matrices": [
+    "configs/backtest/search_multiasset_l1_flow_matrix_formal_v1.json",
+    "configs/backtest/search_multiasset_l1_flow_matrix_deep_v1.json"
+  ],
+  "catalog_output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/contract_examples/backtest_result_catalog_deep_v1",
+  "compare_output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/contract_examples/backtest_result_compare_deep_v1",
+  "top_n": 800,
+  "min_seen_matrix_count": 1,
+  "skip_existing_ok": true,
+  "require_child_run_manifests": true,
+  "positioning": "deep_search_safe_batch_not_full_xuan_state_machine"
+}

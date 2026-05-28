@@ -34,6 +34,8 @@ COMPLIANCE_DATASET_TYPE = "completion_unwind_state_machine_compliance_v1"
 BLOCKED_LABELS = {"20260514", "20260515", "20260519"}
 BLOCKED_DAYS = {"2026-05-14", "2026-05-15", "2026-05-19"}
 DUST = 1e-9
+OFFICIAL_CLOB_FEE_FORMULA = "fee = shares * fee_rate * price * (1 - price)"
+OFFICIAL_CLOB_FEE_SOURCE = "https://docs.polymarket.com/trading/fees"
 
 
 @dataclass
@@ -92,6 +94,65 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str] | No
         writer.writerows(rows)
 
 
+def infer_duckdb_type(field: str, rows: list[dict[str, Any]]) -> str:
+    """Infer a stable DuckDB type from Python values, avoiding CSV auto-casts.
+
+    DuckDB's CSV sniffer treats YES/NO as BOOLEAN. That is unsafe for strategy
+    side fields, where YES/NO are Polymarket outcome labels and must stay text.
+    """
+
+    force_text = {
+        "candidate_id",
+        "config_name",
+        "source_label",
+        "day",
+        "condition_id",
+        "slug",
+        "ts_iso",
+        "side",
+        "opposite_side",
+        "winner_side",
+        "side_alignment",
+        "candidate_reason",
+        "blocked_by",
+        "decision_scope",
+    }
+    if field in force_text or field.endswith("_id") and field != "action_id":
+        return "VARCHAR"
+    for row in rows:
+        value = row.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return "BOOLEAN"
+        if isinstance(value, int):
+            return "BIGINT"
+        if isinstance(value, float):
+            return "DOUBLE"
+        return "VARCHAR"
+    if field.endswith("_count") or field.endswith("_actions") or field.endswith("_ms"):
+        return "BIGINT"
+    if field in {"deployable", "strict_cache_day_covered", "public_audit_day_covered"}:
+        return "BOOLEAN"
+    return "DOUBLE"
+
+
+def create_table_from_rows(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    rows: list[dict[str, Any]],
+    fieldnames: list[str],
+) -> None:
+    columns = [(field, infer_duckdb_type(field, rows)) for field in fieldnames]
+    column_sql = ", ".join(f"{quote_ident(field)} {duckdb_type}" for field, duckdb_type in columns)
+    conn.execute(f"CREATE TABLE {quote_ident(table)} ({column_sql})")
+    if not rows:
+        return
+    placeholders = ", ".join("?" for _ in columns)
+    insert_sql = f"INSERT INTO {quote_ident(table)} VALUES ({placeholders})"
+    conn.executemany(insert_sql, [tuple(row.get(field) for field, _ in columns) for row in rows])
+
+
 def iso_ms(ms: int) -> str:
     return dt.datetime.fromtimestamp(ms / 1000, tz=dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -108,6 +169,22 @@ def as_float(value: Any, default: float = math.nan) -> float:
 
 def pct(num: float, den: float) -> float:
     return round(num / den, 6) if abs(den) > DUST else 0.0
+
+
+def official_clob_taker_fee(shares: float, price: float, fee_rate: float) -> float:
+    if shares <= DUST or price < 0.0 or price > 1.0 or fee_rate <= 0.0:
+        return 0.0
+    return shares * fee_rate * price * (1.0 - price)
+
+
+def seed_fill_fee(qty: float, price: float, args: argparse.Namespace) -> float:
+    if args.fee_model == "none":
+        return 0.0
+    if args.fee_model == "official_taker":
+        return official_clob_taker_fee(qty, price, args.official_fee_rate)
+    if args.fee_model == "flat_notional":
+        return qty * price * args.flat_notional_fee_rate
+    raise ValueError(f"unknown fee model: {args.fee_model}")
 
 
 def percentile(values: list[float], q: float) -> float | None:
@@ -282,11 +359,13 @@ def settle_market(
             )
 
 
-def finish_metrics(metrics: defaultdict[str, float], action_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def finish_metrics(metrics: defaultdict[str, float], action_rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
     buy_qty = metrics["gross_buy_qty"]
     buy_cost = metrics["gross_buy_cost"]
     pair_qty = metrics["pair_qty"]
     actual_pnl = metrics["pair_pnl"] + metrics["residual_settle_pnl"]
+    fee = metrics["total_fee"]
+    fee_after_pnl = actual_pnl - fee
     worst_residual_pnl = metrics["pair_pnl"] - metrics["residual_cost"]
     flat_residual_pnl = metrics["pair_pnl"]
     stress_shares = 2 * pair_qty + metrics["residual_qty"]
@@ -307,12 +386,18 @@ def finish_metrics(metrics: defaultdict[str, float], action_rows: list[dict[str,
         "rounds_per_market": pct(metrics["pair_actions"], metrics["active_markets"]),
         "pair_pnl": round(metrics["pair_pnl"], 6),
         "gross_pnl": round(actual_pnl, 6),
-        "net_pnl": round(actual_pnl, 6),
-        "fee283": 0.0,
-        "fee_after_pnl": round(actual_pnl, 6),
+        "net_pnl": round(fee_after_pnl, 6),
+        "fee_model": args.fee_model,
+        "official_fee_formula": OFFICIAL_CLOB_FEE_FORMULA if args.fee_model == "official_taker" else None,
+        "official_fee_source": OFFICIAL_CLOB_FEE_SOURCE if args.fee_model == "official_taker" else None,
+        "official_fee_rate": round(args.official_fee_rate, 8) if args.fee_model == "official_taker" else None,
+        "flat_notional_fee_rate": round(args.flat_notional_fee_rate, 8) if args.fee_model == "flat_notional" else None,
+        "official_taker_fee": round(fee, 6) if args.fee_model == "official_taker" else 0.0,
+        "fee283": None,
+        "fee_after_pnl": round(fee_after_pnl, 6),
         "actual_settle_pnl": round(actual_pnl, 6),
         "actual_settle_roi": pct(actual_pnl, buy_cost),
-        "net_roi": pct(actual_pnl, buy_cost),
+        "net_roi": pct(fee_after_pnl, buy_cost),
         "residual_qty": round(metrics["residual_qty"], 6),
         "residual_cost": round(metrics["residual_cost"], 6),
         "residual_settle_payout": round(metrics["residual_settle_payout"], 6),
@@ -353,14 +438,17 @@ def finish_metrics(metrics: defaultdict[str, float], action_rows: list[dict[str,
 def classify_completion_only(metrics: dict[str, Any]) -> str:
     if int(metrics.get("seed_actions") or 0) <= 0 or int(metrics.get("pair_actions") or 0) <= 0:
         return "DISCARD"
-    if float(metrics.get("net_pnl") or 0.0) > 0 and float(metrics.get("stress100_worst_pnl") or 0.0) > 0:
+    if float(metrics.get("fee_after_pnl") or 0.0) > 0 and float(metrics.get("stress100_worst_pnl") or 0.0) > 0:
         return "PASS_LOCAL_COMPLETION_RESEARCH_ONLY"
-    if float(metrics.get("net_pnl") or 0.0) <= 0:
+    if float(metrics.get("fee_after_pnl") or 0.0) <= 0:
         return "DISCARD"
     return "UNKNOWN_NOT_DEPLOYABLE"
 
 
 def candidate_query(args: argparse.Namespace) -> str:
+    taker_filter = ""
+    if args.public_trade_taker_side != "ANY":
+        taker_filter = f"AND public_trade_taker_side = '{args.public_trade_taker_side}'"
     return f"""
     SELECT
       candidate_row_id,
@@ -383,7 +471,7 @@ def candidate_query(args: argparse.Namespace) -> str:
       candidate_reason
     FROM candidate_base
     WHERE event_kind = 'public_trade'
-      AND public_trade_taker_side = 'SELL'
+      {taker_filter}
       AND side IN ('YES', 'NO')
       AND offset_s >= {float(args.offset_min_s)}
       AND offset_s < {float(args.offset_max_s)}
@@ -494,6 +582,7 @@ def run_passive_redeem(
             )
             if qty <= args.dust_qty:
                 continue
+            fee = seed_fill_fee(qty, seed_px, args)
 
             action_id += 1
             candidate_id = stable_id(candidate_base_manifest, config_name, row["candidate_row_id"], action_id)
@@ -512,11 +601,13 @@ def run_passive_redeem(
             metrics["seed_actions"] += 1
             metrics["gross_buy_qty"] += qty
             metrics["gross_buy_cost"] += qty * seed_px
+            metrics["total_fee"] += fee
             dm = day_metrics[state.day]
             dm["candidate_count"] += 1
             dm["seed_actions"] += 1
             dm["gross_buy_qty"] += qty
             dm["gross_buy_cost"] += qty * seed_px
+            dm["total_fee"] += fee
             pair_delta = pair_inventory(state, metrics, ts_ms, day_metrics)
             actions.append(
                 {
@@ -543,6 +634,9 @@ def run_passive_redeem(
                     "seed_px": round(seed_px, 6),
                     "seed_qty": round(qty, 6),
                     "seed_cost": round(qty * seed_px, 6),
+                    "fee_model": args.fee_model,
+                    "official_taker_fee": round(fee, 6) if args.fee_model == "official_taker" else 0.0,
+                    "fee": round(fee, 6),
                     "pair_qty_after_seed": round(pair_delta["paired_qty"], 6),
                     "pair_actions_after_seed": int(pair_delta["pair_actions"]),
                     "pair_cost_wavg_after_seed": round(pair_delta["pair_cost_wavg"], 6)
@@ -569,6 +663,7 @@ def run_passive_redeem(
         buy_cost = item["gross_buy_cost"]
         pair_qty = item["pair_qty"]
         actual_pnl = item["pair_pnl"] + item["residual_settle_pnl"]
+        fee = item["total_fee"]
         worst_pnl = item["pair_pnl"] - item["residual_cost"]
         stress_shares = 2 * pair_qty + item["residual_qty"]
         daily_rows.append(
@@ -584,6 +679,9 @@ def run_passive_redeem(
                 "pair_cost_wavg": round(item["pair_cost_sum"] / pair_qty, 6) if pair_qty else None,
                 "pair_pnl": round(item["pair_pnl"], 6),
                 "actual_settle_pnl": round(actual_pnl, 6),
+                "official_taker_fee": round(fee, 6) if args.fee_model == "official_taker" else 0.0,
+                "fee283": None,
+                "fee_after_pnl": round(actual_pnl - fee, 6),
                 "worst_residual_net_pnl": round(worst_pnl, 6),
                 "stress100_worst_pnl": round(worst_pnl - 0.01 * stress_shares, 6),
                 "residual_qty": round(item["residual_qty"], 6),
@@ -594,7 +692,10 @@ def run_passive_redeem(
         )
 
     metrics["candidate_markets_seen"] = len(market_seen)
-    final_metrics = finish_metrics(metrics, actions)
+    final_metrics = finish_metrics(metrics, actions, args)
+    final_metrics["worst_day_fee_after_pnl"] = (
+        round(min(float(row["fee_after_pnl"]) for row in daily_rows), 6) if daily_rows else None
+    )
     return actions, final_metrics, daily_rows, residual_rows
 
 
@@ -802,12 +903,25 @@ def main() -> int:
     parser.add_argument("--imbalance-cost-cap", type=float, default=1_000_000_000.0)
     parser.add_argument("--residual-cooldown-age-s", type=float, default=30.0)
     parser.add_argument("--residual-cooldown-cost-cap", type=float, default=0.5)
+    parser.add_argument("--fee-model", choices=["none", "official_taker", "flat_notional"], default="none")
+    parser.add_argument("--official-fee-rate", type=float, default=None)
+    parser.add_argument("--flat-notional-fee-rate", type=float, default=0.0)
     parser.add_argument("--dust-qty", type=float, default=1.0)
     parser.add_argument("--offset-min-s", type=float, default=0.0)
     parser.add_argument("--offset-max-s", type=float, default=300.0)
+    parser.add_argument("--public-trade-taker-side", choices=["SELL", "BUY", "ANY"], default="SELL")
     parser.add_argument("--public-audit-window-ms", type=int, default=1000)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.fee_model == "official_taker":
+        if args.official_fee_rate is None:
+            raise SystemExit("--official-fee-rate is required when --fee-model=official_taker")
+        if args.official_fee_rate < 0:
+            raise SystemExit("--official-fee-rate must be non-negative")
+    else:
+        args.official_fee_rate = 0.0
+    if args.flat_notional_fee_rate < 0:
+        raise SystemExit("--flat-notional-fee-rate must be non-negative")
 
     started = time.perf_counter()
     base_dir = args.candidate_base_dir.expanduser().resolve()
@@ -851,6 +965,9 @@ def main() -> int:
         "seed_px",
         "seed_qty",
         "seed_cost",
+        "fee_model",
+        "official_taker_fee",
+        "fee",
         "pair_qty_after_seed",
         "pair_actions_after_seed",
         "pair_cost_wavg_after_seed",
@@ -862,21 +979,58 @@ def main() -> int:
         "decision_scope",
         "deployable",
     ]
+    daily_fields = [
+        "day",
+        "candidate_count",
+        "active_markets",
+        "seed_actions",
+        "pair_actions",
+        "gross_buy_qty",
+        "gross_buy_cost",
+        "pair_qty",
+        "pair_cost_wavg",
+        "pair_pnl",
+        "actual_settle_pnl",
+        "official_taker_fee",
+        "fee283",
+        "fee_after_pnl",
+        "worst_residual_net_pnl",
+        "stress100_worst_pnl",
+        "residual_qty",
+        "residual_cost",
+        "qty_residual_rate",
+        "cost_residual_rate",
+    ]
+    residual_fields = [
+        "condition_id",
+        "day",
+        "slug",
+        "winner_side",
+        "side",
+        "qty",
+        "px",
+        "cost",
+        "payout",
+        "pnl",
+        "source_seed_action_id",
+        "candidate_row_id",
+        "age_s",
+    ]
     actions_csv = out_dir / "actions.csv"
     summary_csv = out_dir / "summary_by_day.csv"
     registry_csv = out_dir / "candidate_registry.csv"
     residual_csv = out_dir / "residual_lots.csv"
     write_csv(actions_csv, actions, action_fields)
-    write_csv(summary_csv, daily_rows)
+    write_csv(summary_csv, daily_rows, daily_fields)
     write_csv(registry_csv, actions, action_fields)
-    write_csv(residual_csv, residual_rows)
+    write_csv(residual_csv, residual_rows, residual_fields)
 
     output_db = out_dir / "state_machine_results.duckdb"
     conn = duckdb.connect(str(output_db))
-    conn.execute(f"CREATE TABLE actions AS SELECT * FROM read_csv_auto({quote_literal(actions_csv)}, HEADER=true)")
-    conn.execute(f"CREATE TABLE summary_by_day AS SELECT * FROM read_csv_auto({quote_literal(summary_csv)}, HEADER=true)")
-    conn.execute(f"CREATE TABLE candidate_registry AS SELECT * FROM read_csv_auto({quote_literal(registry_csv)}, HEADER=true)")
-    conn.execute(f"CREATE TABLE residual_lots AS SELECT * FROM read_csv_auto({quote_literal(residual_csv)}, HEADER=true)")
+    create_table_from_rows(conn, "actions", actions, action_fields)
+    create_table_from_rows(conn, "summary_by_day", daily_rows, daily_fields)
+    create_table_from_rows(conn, "candidate_registry", actions, action_fields)
+    create_table_from_rows(conn, "residual_lots", residual_rows, residual_fields)
     conn.execute(f"COPY actions TO {quote_literal(out_dir / 'actions.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
     conn.execute(f"COPY summary_by_day TO {quote_literal(out_dir / 'summary_by_day.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
     conn.execute(f"COPY candidate_registry TO {quote_literal(out_dir / 'candidate_registry.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
@@ -920,8 +1074,14 @@ def main() -> int:
         "imbalance_cost_cap": args.imbalance_cost_cap,
         "residual_cooldown_age_s": args.residual_cooldown_age_s,
         "residual_cooldown_cost_cap": args.residual_cooldown_cost_cap,
+        "fee_model": args.fee_model,
+        "official_fee_formula": OFFICIAL_CLOB_FEE_FORMULA if args.fee_model == "official_taker" else None,
+        "official_fee_source": OFFICIAL_CLOB_FEE_SOURCE if args.fee_model == "official_taker" else None,
+        "official_fee_rate": args.official_fee_rate if args.fee_model == "official_taker" else None,
+        "flat_notional_fee_rate": args.flat_notional_fee_rate if args.fee_model == "flat_notional" else None,
         "offset_min_s": args.offset_min_s,
         "offset_max_s": args.offset_max_s,
+        "public_trade_taker_side": args.public_trade_taker_side,
     }
     outputs = {
         "duckdb": "state_machine_results.duckdb",
@@ -941,6 +1101,7 @@ def main() -> int:
     result_manifest = {
         "created_at": utc_now(),
         "schema_version": "result_summary_v2",
+        "schema_contract": "explicit_duckdb_schema_v1",
         "dataset_type": SUMMARY_DATASET_TYPE,
         **common_scope,
         "status": metrics["status"],
@@ -963,6 +1124,7 @@ def main() -> int:
     registry_manifest = {
         "created_at": utc_now(),
         "schema_version": "candidate_registry_v2",
+        "schema_contract": "explicit_duckdb_schema_v1",
         "dataset_type": REGISTRY_DATASET_TYPE,
         **common_scope,
         "row_count": len(actions),
