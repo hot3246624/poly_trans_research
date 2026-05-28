@@ -70,6 +70,9 @@ EXPECTED_RUNNERS = (
     "scripts/build_btc_rescue_adjusted_capital_ledger.py",
     "scripts/build_btc_merge_turnover_report.py",
     "scripts/build_btc_source_semantics_delta_report.py",
+    "scripts/build_multiasset_strict_rescue_opportunity_report.py",
+    "scripts/build_multiasset_merge_turnover_report.py",
+    "scripts/build_xuan_backtest_v1_strategy_readiness_gate.py",
     "scripts/repair_replay_store_duckdb_view_paths.py",
     "scripts/validate_l1_from_l2_parity.py",
     "scripts/build_l2_top_aligned_mart_partitioned.py",
@@ -444,6 +447,12 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         / "contract_examples/btc_merge_turnover_latest/BTC_MERGE_TURNOVER_REPORT.json",
         "btc_source_semantics_delta": derived
         / "contract_examples/btc_source_semantics_delta_latest/BTC_SOURCE_SEMANTICS_DELTA_REPORT.json",
+        "multiasset_strict_rescue_opportunity": derived
+        / "contract_examples/multiasset_strict_rescue_opportunity_latest/MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT.json",
+        "multiasset_merge_turnover": derived
+        / "contract_examples/multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json",
+        "xuan_strategy_readiness_gate": derived
+        / "contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json",
         "l2_validation_plan": derived
         / "contract_examples/backtest_l2_validation_plan_latest/BACKTEST_L2_VALIDATION_PLAN_MANIFEST.json",
         "l1_from_l2_parity": derived
@@ -574,6 +583,15 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         "btc_source_semantics_delta": check_optional_report(
             paths["btc_source_semantics_delta"], issues, "btc_source_semantics_delta_report_v1"
         ),
+        "multiasset_strict_rescue_opportunity": check_optional_report(
+            paths["multiasset_strict_rescue_opportunity"], issues, "multiasset_strict_rescue_opportunity_report_v1"
+        ),
+        "multiasset_merge_turnover": check_optional_report(
+            paths["multiasset_merge_turnover"], issues, "multiasset_merge_turnover_report_v1"
+        ),
+        "xuan_strategy_readiness_gate": check_optional_report(
+            paths["xuan_strategy_readiness_gate"], issues, "xuan_backtest_v1_strategy_readiness_gate_v1"
+        ),
         "l2_validation_plan": check_optional_report(
             paths["l2_validation_plan"], issues, "backtest_l2_validation_plan_v1"
         ),
@@ -615,6 +633,9 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_rescue_adjusted_capital_ledger",
             "btc_merge_turnover",
             "btc_source_semantics_delta",
+            "multiasset_strict_rescue_opportunity",
+            "multiasset_merge_turnover",
+            "xuan_strategy_readiness_gate",
             "l2_validation_plan",
             "l1_from_l2_parity",
             "l2_top_aligned_mart",
@@ -690,6 +711,9 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_rescue_adjusted_capital_ledger_status": reports["btc_rescue_adjusted_capital_ledger"].get("status"),
             "btc_merge_turnover_status": reports["btc_merge_turnover"].get("status"),
             "btc_source_semantics_delta_status": reports["btc_source_semantics_delta"].get("status"),
+            "multiasset_strict_rescue_opportunity_status": reports["multiasset_strict_rescue_opportunity"].get("status"),
+            "multiasset_merge_turnover_status": reports["multiasset_merge_turnover"].get("status"),
+            "xuan_strategy_readiness_gate_status": reports["xuan_strategy_readiness_gate"].get("status"),
             "l2_validation_plan_status": reports["l2_validation_plan"].get("status"),
             "l1_from_l2_parity_status": reports["l1_from_l2_parity"].get("status"),
             "l2_top_aligned_mart_status": reports["l2_top_aligned_mart"].get("status"),

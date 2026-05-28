@@ -45,23 +45,43 @@ DEFAULT_BTC_SOURCE_SEMANTICS = (
     DEFAULT_DATA_ROOT
     / "derived/contract_examples/btc_source_semantics_delta_latest/BTC_SOURCE_SEMANTICS_DELTA_REPORT.json"
 )
+DEFAULT_MULTIASSET_STRICT_RESCUE = (
+    DEFAULT_DATA_ROOT
+    / "derived/contract_examples/multiasset_strict_rescue_opportunity_latest/"
+    / "MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT.json"
+)
+DEFAULT_MULTIASSET_MERGE_TURNOVER = (
+    DEFAULT_DATA_ROOT
+    / "derived/contract_examples/multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json"
+)
+DEFAULT_L2_TOP_ALIGNED_MART = (
+    DEFAULT_DATA_ROOT
+    / "derived/contract_examples/l2_top_aligned_mart_20260502_20260518_l2/L2_TOP_ALIGNED_MART_MANIFEST.json"
+)
 
 SCORECARD_FIELDS = [
     "source",
+    "bridge_category",
     "asset",
     "candidate_key",
     "queue_pnl",
     "pair_completion_pnl",
     "strict_rescue_pnl",
     "pair_pnl",
+    "paired_mergeable_qty",
+    "paired_mergeable_cost",
+    "merge_recovered_capital",
     "filled_cost",
     "capital_turnover",
     "roi",
     "roi_per_1000_daily_estimate",
     "residual_cost",
     "residual_qty",
+    "market_end_residual_cost",
+    "market_end_residual_qty",
     "residual_cost_share",
     "residual_qty_share",
+    "actual_settlement_residual_pnl",
     "mature_after_fee_mark_value",
     "marked_pnl_after_residual",
     "zero_stress_residual_loss",
@@ -169,6 +189,14 @@ def source_block_count(metrics: dict[str, Any]) -> int:
     return total
 
 
+def bridge_category(source: str) -> str:
+    if "audit_pack_search_safe_screener" in source:
+        return "queue_screener_search_safe"
+    if "completion_residual_state_machine_adapter" in source:
+        return "completion_adapter_research"
+    return "xuan_compatible_bridge"
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -217,6 +245,23 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     btc_merge_turnover = read_json(args.btc_merge_turnover_report) if args.btc_merge_turnover_report.exists() else {}
     btc_merge_metrics = btc_merge_turnover.get("metrics") or {}
     btc_source_semantics = read_json(args.btc_source_semantics_report) if args.btc_source_semantics_report.exists() else {}
+    multiasset_strict_rescue = (
+        read_json(args.multiasset_strict_rescue_report) if args.multiasset_strict_rescue_report.exists() else {}
+    )
+    multiasset_strict_rescue_summary = multiasset_strict_rescue.get("summary") or {}
+    multiasset_merge_turnover = (
+        read_json(args.multiasset_merge_turnover_report) if args.multiasset_merge_turnover_report.exists() else {}
+    )
+    multiasset_merge_metrics = multiasset_merge_turnover.get("metrics") or {}
+    l2_top_aligned = read_json(args.l2_top_aligned_mart_manifest) if args.l2_top_aligned_mart_manifest.exists() else {}
+    l2_top_aligned_contract = {
+        "contract_name": "md_book_l2_top_aligned",
+        "top_source": "md_book_l1 canonical top",
+        "depth_source": "latest md_book_l2 side snapshot at or before L1 capture sequence",
+        "raw_md_book_l2_is_top_of_book_contract": False,
+        "accepted_for_v1_l2_evidence": l2_top_aligned.get("status") == "OK",
+        "status": "OK" if l2_top_aligned.get("status") == "OK" else "NOT_READY",
+    }
     latency_stats = {
         "old_offset_distribution": old_metrics.get("offset_s_distribution") or {},
         "old_action_l2_bridge": old_l2_summary,
@@ -229,14 +274,24 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "pair_completion_pnl": old_metrics.get("pair_pnl"),
         "strict_rescue_pnl": "",
         "pair_pnl": old_metrics.get("pair_pnl"),
+        "paired_mergeable_qty": old_metrics.get("pair_qty"),
+        "paired_mergeable_cost": (
+            rounded((to_float(old_metrics.get("pair_qty")) or 0.0) - (to_float(old_metrics.get("pair_pnl")) or 0.0))
+            if old_metrics.get("pair_qty") not in (None, "")
+            else ""
+        ),
+        "merge_recovered_capital": old_metrics.get("pair_qty"),
         "filled_cost": old_metrics.get("gross_buy_cost"),
         "capital_turnover": old_metrics.get("rounds_per_market"),
         "roi": old_metrics.get("net_roi"),
         "roi_per_1000_daily_estimate": "",
         "residual_cost": old_metrics.get("residual_cost"),
         "residual_qty": old_metrics.get("residual_qty"),
+        "market_end_residual_cost": old_metrics.get("residual_cost"),
+        "market_end_residual_qty": old_metrics.get("residual_qty"),
         "residual_cost_share": old_metrics.get("residual_cost_rate") or old_metrics.get("cost_residual_rate"),
         "residual_qty_share": old_metrics.get("residual_qty_rate") or old_metrics.get("qty_residual_rate"),
+        "actual_settlement_residual_pnl": old_metrics.get("residual_settle_pnl"),
         "mature_after_fee_mark_value": old_recovery_summary.get("best_after_fee_recovery_value"),
         "marked_pnl_after_residual": old_metrics.get("fee_after_pnl"),
         "zero_stress_residual_loss": old_residual.get("zero_stress_residual_loss"),
@@ -277,14 +332,22 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                 "pair_completion_pnl": row.get("pair_pnl"),
                 "strict_rescue_pnl": "",
                 "pair_pnl": row.get("pair_pnl"),
+                "paired_mergeable_qty": row.get("pair_qty"),
+                "paired_mergeable_cost": rounded((to_float(row.get("pair_qty")) or 0.0) - (to_float(row.get("pair_pnl")) or 0.0))
+                if row.get("pair_qty") not in (None, "")
+                else "",
+                "merge_recovered_capital": row.get("pair_qty"),
                 "filled_cost": row.get("gross_buy_cost"),
                 "capital_turnover": safe_div(row.get("pair_actions"), row.get("active_markets")),
                 "roi": rounded(day_roi),
                 "roi_per_1000_daily_estimate": rounded(day_roi * 1000.0) if day_roi is not None else "",
                 "residual_cost": row.get("residual_cost"),
                 "residual_qty": row.get("residual_qty"),
+                "market_end_residual_cost": row.get("residual_cost"),
+                "market_end_residual_qty": row.get("residual_qty"),
                 "residual_cost_share": row.get("cost_residual_rate"),
                 "residual_qty_share": row.get("qty_residual_rate"),
+                "actual_settlement_residual_pnl": row.get("residual_settle_pnl"),
                 "mature_after_fee_mark_value": day_recovery.get("best_after_fee_recovery_value"),
                 "marked_pnl_after_residual": row.get("fee_after_pnl"),
                 "zero_stress_residual_loss": day_residual.get("zero_stress_residual_loss"),
@@ -317,16 +380,26 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                 "candidate_key": "v1_completion_adapter_aggregate",
                 "queue_pnl": "",
                 "pair_completion_pnl": v1_sm_metrics.get("pair_pnl"),
-                "strict_rescue_pnl": "",
+                "strict_rescue_pnl": multiasset_merge_metrics.get("strict_rescue_pnl")
+                or multiasset_strict_rescue_summary.get("best_after_fee_rescue_pnl"),
                 "pair_pnl": v1_sm_metrics.get("pair_pnl"),
+                "paired_mergeable_qty": multiasset_merge_metrics.get("paired_mergeable_qty") or v1_sm_metrics.get("pair_qty"),
+                "paired_mergeable_cost": multiasset_merge_metrics.get("paired_mergeable_cost"),
+                "merge_recovered_capital": multiasset_merge_metrics.get("merge_recovered_capital") or v1_sm_metrics.get("pair_qty"),
                 "filled_cost": v1_sm_metrics.get("gross_buy_cost"),
-                "capital_turnover": v1_sm_metrics.get("rounds_per_market"),
+                "capital_turnover": multiasset_merge_metrics.get("capital_turnover") or v1_sm_metrics.get("rounds_per_market"),
                 "roi": rounded(v1_sm_roi),
                 "roi_per_1000_daily_estimate": rounded(v1_sm_roi * 1000.0) if v1_sm_roi is not None else "",
                 "residual_cost": v1_sm_metrics.get("residual_cost"),
                 "residual_qty": v1_sm_metrics.get("residual_qty"),
+                "market_end_residual_cost": multiasset_merge_metrics.get("market_end_residual_cost")
+                or v1_sm_metrics.get("residual_cost"),
+                "market_end_residual_qty": multiasset_merge_metrics.get("market_end_residual_qty")
+                or v1_sm_metrics.get("residual_qty"),
                 "residual_cost_share": v1_sm_metrics.get("residual_cost_rate") or v1_sm_metrics.get("cost_residual_rate"),
                 "residual_qty_share": v1_sm_metrics.get("residual_qty_rate") or v1_sm_metrics.get("qty_residual_rate"),
+                "actual_settlement_residual_pnl": multiasset_merge_metrics.get("actual_settlement_residual_pnl")
+                or v1_sm_metrics.get("residual_settle_pnl"),
                 "mature_after_fee_mark_value": v1_sm_metrics.get("residual_settle_payout"),
                 "marked_pnl_after_residual": v1_sm_metrics.get("fee_after_pnl"),
                 "zero_stress_residual_loss": v1_sm_residual.get("zero_stress_residual_loss"),
@@ -347,7 +420,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                     sort_keys=True,
                 ),
                 "status": v1_sm_manifest.get("status"),
-                "missing_bridge_fields": "strict_rescue_pnl,merge_capital_reuse,owner_private_truth",
+                "missing_bridge_fields": "owner_private_truth,source_semantics_parity",
             }
         )
         for row in v1_sm_summary_rows:
@@ -363,14 +436,24 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                     "pair_completion_pnl": row.get("pair_pnl"),
                     "strict_rescue_pnl": "",
                     "pair_pnl": row.get("pair_pnl"),
+                    "paired_mergeable_qty": row.get("pair_qty"),
+                    "paired_mergeable_cost": rounded(
+                        (to_float(row.get("pair_qty")) or 0.0) - (to_float(row.get("pair_pnl")) or 0.0)
+                    )
+                    if row.get("pair_qty") not in (None, "")
+                    else "",
+                    "merge_recovered_capital": row.get("pair_qty"),
                     "filled_cost": row.get("gross_buy_cost"),
                     "capital_turnover": safe_div(row.get("pair_actions"), row.get("active_markets")),
                     "roi": rounded(day_roi),
                     "roi_per_1000_daily_estimate": rounded(day_roi * 1000.0) if day_roi is not None else "",
                     "residual_cost": row.get("residual_cost"),
                     "residual_qty": row.get("residual_qty"),
+                    "market_end_residual_cost": row.get("residual_cost"),
+                    "market_end_residual_qty": row.get("residual_qty"),
                     "residual_cost_share": row.get("cost_residual_rate"),
                     "residual_qty_share": row.get("qty_residual_rate"),
+                    "actual_settlement_residual_pnl": row.get("residual_settle_pnl"),
                     "mature_after_fee_mark_value": row.get("actual_settle_pnl"),
                     "marked_pnl_after_residual": row.get("fee_after_pnl"),
                     "zero_stress_residual_loss": day_residual.get("zero_stress_residual_loss"),
@@ -397,6 +480,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                 "pair_completion_pnl": btc_rescue_all.get("pair_pnl"),
                 "strict_rescue_pnl": btc_rescue_all.get("incremental_fee_after_pnl_vs_baseline"),
                 "pair_pnl": btc_rescue_all.get("pair_pnl"),
+                "paired_mergeable_qty": btc_merge_metrics.get("paired_mergeable_qty") or btc_merge_metrics.get("pair_qty"),
+                "paired_mergeable_cost": btc_merge_metrics.get("paired_mergeable_cost") or btc_merge_metrics.get("pair_cost_sum"),
+                "merge_recovered_capital": btc_merge_metrics.get("merge_recovered_capital")
+                or btc_merge_metrics.get("pair_merge_redeem_value"),
                 "filled_cost": btc_merge_metrics.get("gross_buy_cost"),
                 "capital_turnover": btc_merge_metrics.get("capital_return_strict_rescue_over_gross_cost"),
                 "roi": btc_rescue_all.get("net_roi"),
@@ -406,9 +493,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                     else ""
                 ),
                 "residual_cost": btc_merge_metrics.get("residual_cost"),
-                "residual_qty": "",
+                "residual_qty": btc_merge_metrics.get("residual_qty"),
+                "market_end_residual_cost": btc_merge_metrics.get("market_end_residual_cost")
+                or btc_merge_metrics.get("residual_cost"),
+                "market_end_residual_qty": btc_merge_metrics.get("market_end_residual_qty")
+                or btc_merge_metrics.get("residual_qty"),
                 "residual_cost_share": btc_merge_metrics.get("residual_cost_share"),
                 "residual_qty_share": "",
+                "actual_settlement_residual_pnl": btc_merge_metrics.get("actual_settlement_residual_pnl"),
                 "mature_after_fee_mark_value": "",
                 "marked_pnl_after_residual": btc_rescue_all.get("fee_after_pnl"),
                 "zero_stress_residual_loss": "",
@@ -453,14 +545,20 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                 "pair_completion_pnl": "",
                 "strict_rescue_pnl": "",
                 "pair_pnl": "",
+                "paired_mergeable_qty": "",
+                "paired_mergeable_cost": "",
+                "merge_recovered_capital": "",
                 "filled_cost": "",
                 "capital_turnover": "",
                 "roi": "",
                 "roi_per_1000_daily_estimate": "",
                 "residual_cost": "",
                 "residual_qty": "",
+                "market_end_residual_cost": "",
+                "market_end_residual_qty": "",
                 "residual_cost_share": "",
                 "residual_qty_share": "",
+                "actual_settlement_residual_pnl": "",
                 "mature_after_fee_mark_value": "",
                 "marked_pnl_after_residual": "",
                 "zero_stress_residual_loss": "",
@@ -478,6 +576,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     scorecard_rows = [old_score] + old_day_scores + v1_sm_scores + btc_bridge_scores + v1_scores
+    for row in scorecard_rows:
+        row.setdefault("bridge_category", bridge_category(str(row.get("source") or "")))
+        for field in SCORECARD_FIELDS:
+            row.setdefault(field, "")
+    category_counts: dict[str, int] = {}
+    for row in scorecard_rows:
+        category = str(row.get("bridge_category") or "uncategorized")
+        category_counts[category] = category_counts.get(category, 0) + 1
     scorecard_csv = output_dir / "xuan_bridge_scorecard.csv"
     write_csv(scorecard_csv, scorecard_rows, SCORECARD_FIELDS)
 
@@ -497,8 +603,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         {
             "field": "strict_rescue_pnl",
             "old_baseline": "not isolated",
-            "multiasset_v1": "present for BTC normalized adapter as research scenario; not generalized to every asset",
-            "unlock": "Generalize L2 rescue close scanner from BTC adapter to multiasset adapter if needed.",
+            "multiasset_v1": "present as a multiasset top-aligned L2 research scenario when MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT is OK",
+            "unlock": "Promote only after source semantics/parity and owner private truth boundaries are accepted.",
         },
         {
             "field": "residual_dynamic_recovery",
@@ -509,8 +615,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         {
             "field": "merge_capital_turnover",
             "old_baseline": "partial rounds_per_market",
-            "multiasset_v1": "present for BTC normalized adapter as merge/redeem turnover report; not generalized to every asset",
-            "unlock": "Generalize merge/redeem capital reuse ledger from BTC adapter to multiasset adapter if needed.",
+            "multiasset_v1": "present as paired_mergeable/merge_recovered_capital/market_end_residual split when MULTIASSET_MERGE_TURNOVER_REPORT is OK",
+            "unlock": "Keep merge capital reuse separate from residual settlement attribution.",
         },
     ]
     missing_csv = output_dir / "xuan_bridge_missing_fields.csv"
@@ -535,7 +641,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "btc_source_semantics_delta_status": (
             btc_source_semantics.get("status") if btc_source_semantics else "MISSING"
         ),
+        "multiasset_strict_rescue_status": (
+            multiasset_strict_rescue.get("status") if multiasset_strict_rescue else "MISSING"
+        ),
+        "multiasset_merge_turnover_status": (
+            multiasset_merge_turnover.get("status") if multiasset_merge_turnover else "MISSING"
+        ),
+        "queue_screener_search_safe_count": category_counts.get("queue_screener_search_safe", 0),
+        "completion_adapter_research_count": category_counts.get("completion_adapter_research", 0),
+        "xuan_compatible_bridge_count": category_counts.get("xuan_compatible_bridge", 0),
         "private_truth_ready": False,
+        "private_promotion_ready_count": 0,
+        "deployable": False,
+        "live_orders_allowed": False,
         "queue_pnl_is_strategy_pnl": False,
     }
 
@@ -550,6 +668,17 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "data_root": str(data_root),
         "output_dir": str(output_dir),
         "summary": summary,
+        "bridge_categories": {
+            "queue_screener_search_safe": "Search-safe queue candidates only; not xuan strategy PnL.",
+            "completion_adapter_research": "Pair/residual state-machine research rows; useful for bridge analysis but not parity/promotion.",
+            "xuan_compatible_bridge": "Rows that are closest to the xuan completion/residual audit frame; still historical public/proxy unless private truth exists.",
+            "counts": category_counts,
+        },
+        "l2_top_aligned_contract": l2_top_aligned_contract,
+        "private_truth_ready": False,
+        "private_promotion_ready_count": 0,
+        "deployable": False,
+        "live_orders_allowed": False,
         "outputs": {
             "scorecard_csv": str(scorecard_csv),
             "missing_fields_csv": str(missing_csv),
@@ -584,6 +713,16 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "manifest": str(args.btc_source_semantics_report),
             "status": btc_source_semantics.get("status") if btc_source_semantics else "MISSING",
             "summary": btc_source_semantics.get("summary") if btc_source_semantics else {},
+        },
+        "multiasset_strict_rescue_opportunity_report": {
+            "manifest": str(args.multiasset_strict_rescue_report),
+            "status": multiasset_strict_rescue.get("status") if multiasset_strict_rescue else "MISSING",
+            "summary": multiasset_strict_rescue_summary,
+        },
+        "multiasset_merge_turnover_report": {
+            "manifest": str(args.multiasset_merge_turnover_report),
+            "status": multiasset_merge_turnover.get("status") if multiasset_merge_turnover else "MISSING",
+            "metrics": multiasset_merge_metrics,
         },
         "btc_bridge_score_count": len(btc_bridge_scores),
         "v1_audit_csv": str(audit_csv),
@@ -625,6 +764,9 @@ def main() -> int:
     parser.add_argument("--btc-rescue-ledger", type=Path, default=DEFAULT_BTC_RESCUE_LEDGER)
     parser.add_argument("--btc-merge-turnover-report", type=Path, default=DEFAULT_BTC_MERGE_TURNOVER)
     parser.add_argument("--btc-source-semantics-report", type=Path, default=DEFAULT_BTC_SOURCE_SEMANTICS)
+    parser.add_argument("--multiasset-strict-rescue-report", type=Path, default=DEFAULT_MULTIASSET_STRICT_RESCUE)
+    parser.add_argument("--multiasset-merge-turnover-report", type=Path, default=DEFAULT_MULTIASSET_MERGE_TURNOVER)
+    parser.add_argument("--l2-top-aligned-mart-manifest", type=Path, default=DEFAULT_L2_TOP_ALIGNED_MART)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--v1-audit-csv", type=Path)
     args = parser.parse_args()
@@ -637,6 +779,9 @@ def main() -> int:
     args.btc_rescue_ledger = args.btc_rescue_ledger.expanduser()
     args.btc_merge_turnover_report = args.btc_merge_turnover_report.expanduser()
     args.btc_source_semantics_report = args.btc_source_semantics_report.expanduser()
+    args.multiasset_strict_rescue_report = args.multiasset_strict_rescue_report.expanduser()
+    args.multiasset_merge_turnover_report = args.multiasset_merge_turnover_report.expanduser()
+    args.l2_top_aligned_mart_manifest = args.l2_top_aligned_mart_manifest.expanduser()
     if args.v1_audit_csv:
         args.v1_audit_csv = args.v1_audit_csv.expanduser()
     if args.output_dir is None:

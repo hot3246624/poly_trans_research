@@ -54,6 +54,15 @@ $POLY_BT_ROOT/derived/contract_examples/backtest_v1_btc_parity_latest/BACKTEST_V
 
 xuan bridge scorecard:
 $POLY_BT_ROOT/derived/contract_examples/xuan_bridge_scorecard_latest/XUAN_BRIDGE_SCORECARD_MANIFEST.json
+
+multiasset strict rescue:
+$POLY_BT_ROOT/derived/contract_examples/multiasset_strict_rescue_opportunity_latest/MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT.json
+
+multiasset merge/residual turnover:
+$POLY_BT_ROOT/derived/contract_examples/multiasset_merge_turnover_latest/MULTIASSET_MERGE_TURNOVER_REPORT.json
+
+xuan strategy readiness gate:
+$POLY_BT_ROOT/derived/contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json
 ```
 
 ## 4. 常用查看命令
@@ -73,6 +82,9 @@ jq '{status, summary, blockers}' \
 
 jq '{status, summary, interpretation}' \
   $POLY_BT_ROOT/derived/contract_examples/xuan_bridge_scorecard_latest/XUAN_BRIDGE_SCORECARD_MANIFEST.json
+
+jq '{status, strategy_research_ready, strategy_research_readiness_level, strategy_promotion_ready, warnings}' \
+  $POLY_BT_ROOT/derived/contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json
 ```
 
 ## 5. 重新跑 search-safe pipeline
@@ -90,10 +102,12 @@ uv run --with duckdb python scripts/run_backtest_matrix_batch.py \
 ## 6. 口径边界
 
 - `best_queue_pnl` 只是 search-safe queue screener 指标，不等于 xuan 完整策略 PnL。
-- xuan 口径要看 `xuan_bridge_scorecard`，它分开列 queue、pair-completion、residual、rescue、merge/redeem turnover。
+- xuan 口径要看 `xuan_bridge_scorecard` 和 `xuan strategy readiness gate`。Scorecard 的 `bridge_category` 分为 `queue_screener_search_safe`、`completion_adapter_research`、`xuan_compatible_bridge`；A 类不能用于判断 xuan 策略好坏。
+- merge/redeem turnover 必须和 residual 风险分开：`paired_mergeable_qty/cost`、`merge_recovered_capital`、`capital_turnover` 是资金复用；`market_end_residual_qty/cost`、`residual_zero_stress_loss`、`actual_settlement_residual_pnl` 是 residual 归因。
 - BTC parity gate 当前预期仍是 `BLOCKED_BTC_BASELINE_PARITY_NOT_PROVEN`。这是已知边界，不是安装失败。
 - 历史 shadow/no-order 没有 owner private truth，不能标记 `private_truth_ready=true`。
 - L2 使用 `md_book_l2_top_aligned`：L1 canonical top + L2 depth/provenance。不要把 raw `md_book_l2` side snapshot 当作 top-of-book truth。
+- 当前总 gate 预期是 `PARTIAL_XUAN_BACKTEST_V1_STRATEGY_RESEARCH_READY_NOT_PROMOTION`；可以用于研究推进，不能 promotion/deploy/live。
 
 ## 7. 常见问题
 
@@ -105,4 +119,3 @@ uv run --with duckdb python scripts/repair_replay_store_duckdb_view_paths.py \
 ```
 
 如果需要重建 L2 或 raw/replay 元数据，才连接 PolyData，并先看完整 runbook 的 L2 部分。
-

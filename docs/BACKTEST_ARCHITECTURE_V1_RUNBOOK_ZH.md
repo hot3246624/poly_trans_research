@@ -320,6 +320,69 @@ PARTIAL_XUAN_BRIDGE_COMPLETION_ADAPTER_READY
 
 Scorecard 会把旧 BTC baseline 的 `pair_pnl / residual / ROI`、V1 completion adapter 的 `pair/residual/after-fee`、以及 V1 audit pack 的 `queue_pnl` 分栏输出，避免把不同口径混在一起。
 
+Scorecard 的 `bridge_category` 必须按三类理解：
+
+```text
+queue_screener_search_safe: 只用于 search-safe queue screener，不代表 xuan 策略 PnL。
+completion_adapter_research: pair/residual state-machine 研究层，可看 bridge 方向，不是 parity/pass。
+xuan_compatible_bridge: 最接近 xuan completion/residual 审计口径，但历史仍然不是 owner private truth。
+```
+
+生成 7 币种 strict rescue opportunity report：
+
+```bash
+uv run --with duckdb python scripts/build_multiasset_strict_rescue_opportunity_report.py
+```
+
+当前期望：
+
+```text
+status=OK_MULTIASSET_STRICT_RESCUE_OPPORTUNITY_READY
+residual_lot_count=11,819
+break_even_after_fee_lot_rate≈0.997462
+rescue_beats_settlement_lot_rate≈0.513157
+best_after_fee_rescue_pnl≈4,846.484666
+```
+
+生成 7 币种 merge/residual turnover report：
+
+```bash
+uv run --with duckdb python scripts/build_multiasset_merge_turnover_report.py
+```
+
+该报告固定拆分：
+
+```text
+paired_mergeable_qty/cost
+merge_recovered_capital
+capital_turnover / rounds_per_market
+market_end_residual_qty/cost
+residual_zero_stress_loss
+actual_settlement_residual_pnl
+```
+
+不要用 residual settlement 盈利来证明策略 edge；它只能作为事后归因。策略设计阶段应看 paired merge/reuse、bad-tail residual risk、strict rescue 可行性和 source-age/L2 evidence。
+
+生成 xuan-ready 总 gate：
+
+```bash
+uv run --with duckdb python scripts/build_xuan_backtest_v1_strategy_readiness_gate.py
+```
+
+当前期望状态：
+
+```text
+status=PARTIAL_XUAN_BACKTEST_V1_STRATEGY_RESEARCH_READY_NOT_PROMOTION
+strategy_research_ready=true
+strategy_research_readiness_level=partial
+strategy_promotion_ready=false
+private_truth_ready=false
+deployable=false
+live_orders_allowed=false
+```
+
+这个 gate 是给同事和后续 agent 的单一入口：基础设施、top-aligned L2、completion adapter、multiasset strict rescue、merge/residual split 已可用于研究；BTC parity/source semantics、xuan bridge complete、owner private truth 仍未闭环，所以不能 promotion/deploy/live。
+
 ## L2 边界
 
 旧 BTC-only `replay_store_v2` 常驻了 `md_book_l2`，因此体积和行数远大于当前多币种 compact core。多币种 V1 的日常热路径故意使用 L1/trades/search-safe，适合高并发搜索和候选筛选。

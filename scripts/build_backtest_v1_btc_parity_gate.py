@@ -172,6 +172,28 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     l2_top_path = contract / "l2_top_aligned_mart_20260502_20260518_l2/L2_TOP_ALIGNED_MART_MANIFEST.json"
     l2_top = read_json(l2_top_path)
     l2_top_status = l2_top.get("status") or "MISSING"
+    l2_top_aligned_contract = {
+        "contract_name": "md_book_l2_top_aligned",
+        "top_source": "md_book_l1 canonical top",
+        "depth_source": "latest md_book_l2 side snapshot at or before L1 capture sequence",
+        "raw_md_book_l2_is_top_of_book_contract": False,
+        "accepted_for_v1_l2_evidence": l2_top_status == "OK",
+        "status": "OK" if l2_top_status == "OK" else "NOT_READY",
+    }
+    private_truth_policy = {
+        "historical_shadow_owner_private_truth_available": False,
+        "private_truth_ready": False,
+        "private_promotion_ready_count": 0,
+        "deployable": False,
+        "live_orders_allowed": False,
+        "reason": "Historical shadow/no-order/public/proxy evidence cannot be promoted to owner private truth.",
+    }
+    source_semantics_explanation = {
+        "new_btc_normalized_adapter": "core replay md_trades taker_side normalized to BUY runner events",
+        "old_btc_baseline": "legacy SELL/mixed public_trade/l1_price_change source-event semantics",
+        "equivalence_status": "NOT_PROVEN",
+        "parity_policy": "Treat the BTC adapter as a research bridge until source-event semantics are explicitly accepted or both baselines are migrated to the same normalized source contract.",
+    }
 
     v1_metrics = {
         "btc_search_safe_rows": btc_search_rows,
@@ -395,12 +417,23 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "l2_top_aligned_mart_status": l2_top_status,
         "l1_from_l2_parity_status": l2_parity_status,
         "owner_private_truth_ready": False,
+        "private_truth_ready": False,
+        "private_promotion_ready_count": 0,
+        "deployable": False,
+        "live_orders_allowed": False,
     }
     manifest = {
         "schema_version": "backtest_v1_btc_parity_gate_v1",
         "created_utc": utc_now(),
         "status": "BLOCKED_BTC_BASELINE_PARITY_NOT_PROVEN",
         "summary": summary,
+        "l2_top_aligned_contract": l2_top_aligned_contract,
+        "private_truth_policy": private_truth_policy,
+        "private_truth_ready": False,
+        "private_promotion_ready_count": 0,
+        "deployable": False,
+        "live_orders_allowed": False,
+        "source_semantics_explanation": source_semantics_explanation,
         "data_root": str(data_root),
         "output_dir": str(output_dir),
         "old_baseline_manifest": str(old_manifest_path),
@@ -472,6 +505,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "row_count": l2_top.get("row_count"),
             "missing_depth_rows": l2_top.get("missing_depth_rows"),
             "top_overlay_required_rate": l2_top.get("top_overlay_required_rate"),
+            "contract": l2_top_aligned_contract,
         },
         "outputs": {"metrics_csv": str(metrics_csv)},
         "blockers": blockers,
