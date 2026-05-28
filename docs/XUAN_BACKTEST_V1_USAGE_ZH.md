@@ -217,34 +217,31 @@ residual settlement win -> 证明策略 edge
 
 ## 7. 重新生成研究层
 
-按以下顺序重建最新研究层：
+默认用一键 refresh runner。它会按正确顺序重建 research control-plane artifacts，并输出总摘要：
 
 ```bash
-uv run --with duckdb python scripts/build_multiasset_strict_rescue_opportunity_report.py
-
-uv run --with duckdb python scripts/build_multiasset_merge_turnover_report.py
-
-uv run --with duckdb python scripts/build_multiasset_backtest_coverage_scorecard.py
-
-uv run --with duckdb python scripts/build_xuan_completion_candidate_rescore.py
-
-uv run --with duckdb python scripts/build_xuan_capital_ledger_report.py
-
-uv run --with duckdb python scripts/build_backtest_v1_btc_parity_gate.py
-
-python scripts/build_xuan_bridge_scorecard.py
-
-uv run --with duckdb python scripts/build_xuan_backtest_v1_strategy_readiness_gate.py
-
-uv run --with duckdb python scripts/validate_multiasset_backtest_v1_local_install.py --strict-duckdb \
-  --output-json $POLY_BT_ROOT/derived/contract_examples/multiasset_backtest_v1_local_install_validation_latest.json
+uv run --with duckdb python scripts/run_xuan_backtest_v1_research_refresh.py
 ```
 
-跑完后再执行：
+输出：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_backtest_v1_refresh_latest/XUAN_BACKTEST_V1_RESEARCH_REFRESH_SUMMARY.json
+```
+
+快速模式可以跳过最重的 L2 rescue 重扫，只刷新其后依赖产物：
 
 ```bash
-uv run pytest
+uv run --with duckdb python scripts/run_xuan_backtest_v1_research_refresh.py --skip-heavy-l2-rescue
 ```
+
+需要把测试也纳入 refresh：
+
+```bash
+uv run --with duckdb python scripts/run_xuan_backtest_v1_research_refresh.py --run-tests
+```
+
+手工分步命令保留在 `docs/BACKTEST_ARCHITECTURE_V1_RUNBOOK_ZH.md`，日常不要复制粘贴分步流程。
 
 ## 8. 指标口径
 

@@ -55,6 +55,7 @@ EXPECTED_RUNNERS = (
     "scripts/run_backtest_validation_queue.py",
     "scripts/run_backtest_l2_validation_queue.py",
     "scripts/run_backtest_l2_top_aligned_validation_queue.py",
+    "scripts/run_xuan_backtest_v1_research_refresh.py",
     "scripts/build_backtest_validation_result_catalog.py",
     "scripts/build_backtest_candidate_audit_pack.py",
     "scripts/build_backtest_v1_crosswalk_report.py",
