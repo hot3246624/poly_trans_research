@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_DAYS = "2026-04-27,2026-04-28,2026-04-29,2026-04-30"
+DEFAULT_DAYS = "2026-04-27,2026-04-28,2026-04-29,2026-04-30,2026-05-01"
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ def script_cmd(script: str, *args: str) -> list[str]:
 def build_steps(args: argparse.Namespace, run_dir: Path) -> list[Step]:
     replay_days = args.days
     common_replay = ["--replay-root", args.replay_root]
+    replay_xuan_dir = run_dir / "xuan_replay_extract"
     tranche_dir = run_dir / "xuan_tranche_ladder"
     cycle_dir = run_dir / "xuan_cycle_feature_gate"
     match_dir = run_dir / "xuan_public_trade_match"
@@ -59,8 +60,27 @@ def build_steps(args: argparse.Namespace, run_dir: Path) -> list[Step]:
     schedule_dir = run_dir / "bounded_taker_schedule"
     hybrid_dir = run_dir / "hybrid_maker_then_bounded_taker"
 
+    extract_cmd = script_cmd(
+        "scripts/extract_xuan_trades_from_replay.py",
+        "--replay-root",
+        args.replay_root,
+        "--days",
+        replay_days,
+        "--output-json",
+        str(replay_xuan_dir / "xuan_trades_raw.json"),
+        "--summary-json",
+        str(replay_xuan_dir / "xuan_trades_from_replay_summary.json"),
+    )
+    if args.start_iso:
+        extract_cmd.extend(["--start-iso", args.start_iso])
+    if args.end_iso:
+        extract_cmd.extend(["--end-iso", args.end_iso])
+
+    xuan_input_json = args.xuan_input_json or str(replay_xuan_dir / "xuan_trades_raw.json")
     tranche_cmd = script_cmd(
         "scripts/analyze_xuan_tranche_ladder.py",
+        "--input-json",
+        xuan_input_json,
         "--output-dir",
         str(tranche_dir),
         "--max-rows",
@@ -72,14 +92,20 @@ def build_steps(args: argparse.Namespace, run_dir: Path) -> list[Step]:
         "--replay-days",
         replay_days,
     )
-    if args.xuan_input_json:
-        tranche_cmd.extend(["--input-json", args.xuan_input_json])
     if args.start_iso:
         tranche_cmd.extend(["--start-iso", args.start_iso])
     if args.end_iso:
         tranche_cmd.extend(["--end-iso", args.end_iso])
 
     steps = [
+        Step(
+            "extract_xuan_trades_from_replay",
+            extract_cmd,
+            {
+                "trades_raw_json": str(replay_xuan_dir / "xuan_trades_raw.json"),
+                "summary_json": str(replay_xuan_dir / "xuan_trades_from_replay_summary.json"),
+            },
+        ),
         Step(
             "xuan_tranche_ladder",
             tranche_cmd,
@@ -366,8 +392,8 @@ def main() -> int:
     parser.add_argument("--start-iso")
     parser.add_argument("--end-iso")
     parser.add_argument("--latest-window-start-iso", default="2026-05-01T00:00:00Z")
-    parser.add_argument("--maker-modes-file", default="data/exports/xuan_cycle_feature_gate_20260501/high_side_wait_shadow_candidates.json")
-    parser.add_argument("--taker-modes-file", default="data/exports/xuan_cycle_feature_gate_20260501/high_side_wait_taker_shadow_candidates.json")
+    parser.add_argument("--maker-modes-file", default="configs/xuan/high_side_wait_shadow_candidates.json")
+    parser.add_argument("--taker-modes-file", default="configs/xuan/high_side_wait_taker_shadow_candidates.json")
     parser.add_argument("--pair-cost-ceilings", default="0.90,0.95,1.00")
     parser.add_argument("--schedules", default="30:0.90,50:0.95,70:1.00;30:0.90,70:0.95;50:0.90,70:0.95")
     parser.add_argument("--include-hybrid", action="store_true")

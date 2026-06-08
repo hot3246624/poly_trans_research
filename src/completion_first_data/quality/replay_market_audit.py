@@ -39,6 +39,8 @@ class AuditConfig:
     raw_book_max_records: int = 250_000
     taker_side_null_max_ratio: float = 0.05
     trusted_start_ms: Optional[int] = None
+    outcome_symbols: Sequence[str] = ("BTC", "ETH", "SOL", "XRP")
+    min_official_outcome_coverage: float = 0.99
 
 
 def _pct(num: int, den: int) -> float:
@@ -74,6 +76,14 @@ def _table_count(conn: sqlite3.Connection, table: str) -> int:
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return bool(_one(conn, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)))
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(r["name"]) for r in rows}
 
 
 def _slug_epoch(slug: str) -> Optional[int]:
@@ -302,24 +312,106 @@ def _audit_btc_book_coverage(conn: sqlite3.Connection, *, trusted_start_ms: Opti
     }
 
 
-def _audit_settlement(conn: sqlite3.Connection) -> Dict[str, Any]:
+def _audit_settlement(
+    conn: sqlite3.Connection,
+    *,
+    symbols: Sequence[str],
+    trusted_start_ms: Optional[int] = None,
+) -> Dict[str, Any]:
     now_ms = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+    allowed_symbols = {s.strip().upper() for s in symbols if s.strip()}
+    settlement_cols = _table_columns(conn, "settlement_records")
+    winner_expr = "s.winner_side" if "winner_side" in settlement_cols else "s.official_outcome"
+    clauses = ["m.end_ms < ?"]
+    params: List[Any] = [now_ms]
+    if trusted_start_ms is not None:
+        clauses.append("m.end_ms > ?")
+        params.append(trusted_start_ms)
+    if allowed_symbols:
+        placeholders = ",".join("?" for _ in allowed_symbols)
+        clauses.append(f"upper(m.symbol) IN ({placeholders})")
+        params.extend(sorted(allowed_symbols))
+    where = " AND ".join(clauses)
+    official_expr = f"""
+        CASE
+          WHEN s.condition_id IS NOT NULL
+           AND COALESCE({winner_expr}, s.official_outcome) IN ('YES', 'NO')
+           AND lower(COALESCE(s.resolution_source, '')) NOT LIKE '%inferred%'
+          THEN 1 ELSE 0
+        END
+    """
+    inferred_expr = """
+        CASE
+          WHEN s.condition_id IS NOT NULL
+           AND lower(COALESCE(s.resolution_source, '')) LIKE '%inferred%'
+          THEN 1 ELSE 0
+        END
+    """
     row = conn.execute(
-        """
-        SELECT COUNT(*) AS ended,
-               SUM(CASE WHEN s.condition_id IS NOT NULL THEN 1 ELSE 0 END) AS settled
+        f"""
+        SELECT COUNT(*) AS markets_total,
+               SUM({official_expr}) AS settled_markets,
+               SUM({inferred_expr}) AS inferred_markets
         FROM market_meta m
         LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
-        WHERE m.symbol='BTC' AND m.end_ms < ?
+        WHERE {where}
         """,
-        (now_ms,),
+        tuple(params),
     ).fetchone()
-    ended = int(row["ended"] or 0)
-    settled = int(row["settled"] or 0)
+    markets_total = int(row["markets_total"] or 0)
+    settled_markets = int(row["settled_markets"] or 0)
+    inferred_markets = int(row["inferred_markets"] or 0)
+
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for r in conn.execute(
+        f"""
+        SELECT m.symbol AS symbol,
+               COUNT(*) AS markets_total,
+               SUM({official_expr}) AS settled_markets,
+               SUM({inferred_expr}) AS inferred_markets
+        FROM market_meta m
+        LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
+        WHERE {where}
+        GROUP BY m.symbol
+        ORDER BY m.symbol
+        """,
+        tuple(params),
+    ).fetchall():
+        total = int(r["markets_total"] or 0)
+        settled = int(r["settled_markets"] or 0)
+        by_symbol[str(r["symbol"])] = {
+            "markets_total": total,
+            "settled_markets": settled,
+            "inferred_markets": int(r["inferred_markets"] or 0),
+            "settlement_coverage_ratio": _pct(settled, total),
+        }
+
+    by_source = {
+        str(r["resolution_source"] or "missing"): int(r["n"] or 0)
+        for r in conn.execute(
+            f"""
+            SELECT COALESCE(s.resolution_source, 'missing') AS resolution_source, COUNT(*) AS n
+            FROM market_meta m
+            LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
+            WHERE {where}
+            GROUP BY COALESCE(s.resolution_source, 'missing')
+            ORDER BY n DESC
+            """,
+            tuple(params),
+        ).fetchall()
+    }
+
+    btc = by_symbol.get("BTC", {})
     return {
-        "btc_ended_rounds": ended,
-        "btc_settlement_rows": settled,
-        "btc_settlement_coverage": _pct(settled, ended),
+        "markets_total": markets_total,
+        "settled_markets": settled_markets,
+        "inferred_markets": inferred_markets,
+        "settlement_coverage_ratio": _pct(settled_markets, markets_total),
+        "by_symbol": by_symbol,
+        "by_resolution_source": by_source,
+        "btc_ended_rounds": int(btc.get("markets_total", 0)),
+        "btc_settlement_rows": int(btc.get("settled_markets", 0)),
+        "btc_settlement_coverage": float(btc.get("settlement_coverage_ratio", 0.0)),
     }
 
 
@@ -506,7 +598,11 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
         day_start_ms, day_end_ms = _day_bounds_ms(day)
         btc_continuity = _audit_btc_continuity(conn, trusted_start_ms=config.trusted_start_ms)
         btc_book_coverage = _audit_btc_book_coverage(conn, trusted_start_ms=config.trusted_start_ms)
-        settlement = _audit_settlement(conn)
+        settlement = _audit_settlement(
+            conn,
+            symbols=config.outcome_symbols,
+            trusted_start_ms=config.trusted_start_ms,
+        )
         btc_rows = conn.execute(
             """
             SELECT condition_id, slug, start_ms, end_ms
@@ -565,8 +661,9 @@ def audit_day(config: AuditConfig, day: str) -> Dict[str, Any]:
         warnings.append("md_book_l2_empty")
     if abs(schema_core["avg_trade_latency_ms"]) > 60_000 or schema_core["max_abs_trade_latency_ms"] > 600_000:
         warnings.append("trade_latency_large")
-    if settlement["btc_settlement_coverage"] < 0.8:
-        warnings.append("btc_settlement_coverage_low")
+    for symbol, symbol_cov in settlement.get("by_symbol", {}).items():
+        if symbol_cov.get("markets_total", 0) > 0 and symbol_cov.get("settlement_coverage_ratio", 0.0) < config.min_official_outcome_coverage:
+            warnings.append(f"{str(symbol).lower()}_settlement_coverage_low")
     if raw_sample["trade_scan_limited"]:
         warnings.append("raw_trade_sample_limited")
     if raw_sample["book_scan_limited"]:
@@ -699,6 +796,8 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
                 f"- partial_day: `{str(day.get('capture_bounds', {}).get('partial_day', False)).lower()}`",
                 f"- btc_rounds: `{day.get('btc_continuity', {}).get('btc_rounds', 0)}`",
                 f"- nonplanned_btc_gaps: `{day.get('btc_continuity', {}).get('nonplanned_gap_count', 0)}`",
+                f"- settlement_coverage_ratio: `{day.get('settlement_records', {}).get('settlement_coverage_ratio', 0)}`",
+                f"- btc_settlement_coverage: `{day.get('settlement_records', {}).get('btc_settlement_coverage', 0)}`",
                 f"- market_feature_probe_btc_trades: `{day.get('market_feature_probe', {}).get('btc_trade_rows', 0)}`",
             ]
         )

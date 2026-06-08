@@ -119,7 +119,7 @@ def fetch_condition_settlement(
         "condition_id": cid,
         "official_outcome": official_outcome,
         "settle_ms": settle_ms,
-        "resolution_source": "gamma_market",
+        "resolution_source": "gamma_api",
         "market_slug": slug,
         "winner_token_id": winner_token_id,
         # Keep a compact serialized copy for future re-parsing and audits.

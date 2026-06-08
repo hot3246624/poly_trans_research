@@ -1,0 +1,1118 @@
+{
+  "schema": "xuan_surpass_candidate_v1",
+  "status": "shadow_backtest_only",
+  "source_script": "scripts/backtest_xuan_proxy_completion_first_v1.py",
+  "reference": {
+    "xuan_market_level_trade_pnl_0427_0501": 14419.080189,
+    "xuan_market_level_roi_0427_0501": 0.020923,
+    "xuan_market_level_weighted_pair_cost_0427_0501": 0.980324,
+    "xuan_5d_surplus_per_size": 0.020216,
+    "xuan_5d_completion_30s_rate": 0.820798,
+    "xuan_5d_pair_cost_p50": 0.994604,
+    "xuan_all_btc_markets": 1340,
+    "xuan_reconstructed_paired_markets": 769,
+    "xuan_active_market_rate": 0.573881,
+    "xuan_tranches_per_all_market": 3.423134,
+    "xuan_tranches_per_active_market": 5.964889,
+    "xuan_tranche_size_p50": 100.5,
+    "xuan_tranche_size_p75": 155.0,
+    "xuan_tranche_size_p90": 216.7
+  },
+  "execution_model": {
+    "first_leg": "maker_bid_with_public_sell_flow_fill_proxy",
+    "completion": "bounded_l2_taker_sweep",
+    "active_tranche_limit": 1,
+    "same_side_add_before_covered": false,
+    "own_execution_truth_required_before_enforce": true
+  },
+  "common_open_filter": {
+    "first_side": "high_side_by_l1_mid",
+    "first_price": "best_bid",
+    "first_fill_timeout_s": 2,
+    "sample_interval_s": 20,
+    "tail_freeze_s": 60,
+    "queue_ahead_fraction": 0.0,
+    "base_clip": 60
+  },
+  "candidate_modes": [
+    {
+      "name": "mid_price_execution_edge_main_track_v0",
+      "intent": "new main research track: copy and improve the highest-ROI subset of xuan's market-level edge, not the narrow high-price sidecar",
+      "status": "research_detector_needed",
+      "open_filter": {
+        "target_first_price": "0.40 <= first_price < 0.55",
+        "target_execution_edge": "first_exec_edge_to_bid >= 0.005",
+        "target_timing": "prefer offset < 30s when also edge >= 0.005",
+        "warning": "Current evidence is anchored to xuan's first public trade; live detector must use our own L1/L2 state, not xuan future prints."
+      },
+      "completion_controller": {
+        "same_as": "completion_first_v1",
+        "required": [
+          "fast pair-cover risk control",
+          "cheap-window slow continuation gate",
+          "no-cheap repair/exit",
+          "residual classifier"
+        ]
+      },
+      "evidence": {
+        "source": "scripts/analyze_xuan_market_edge_features.py over 2026-04-27..2026-05-01 market-level xuan PnL truth",
+        "all_xuan_market_count": 947,
+        "all_xuan_pnl": 14419.080189,
+        "all_xuan_roi": 0.020923,
+        "all_xuan_weighted_pair_cost": 0.980324,
+        "edge_ge_0_5c_market_count": 456,
+        "edge_ge_0_5c_pnl": 8985.617251,
+        "edge_ge_0_5c_roi": 0.026966,
+        "edge_ge_0_5c_weighted_pair_cost": 0.97394,
+        "price_040_055_and_edge_ge_0_5c_market_count": 260,
+        "price_040_055_and_edge_ge_0_5c_pnl": 5944.52621,
+        "price_040_055_and_edge_ge_0_5c_roi": 0.029816,
+        "price_040_055_and_edge_ge_0_5c_weighted_pair_cost": 0.971045,
+        "price_040_055_and_edge_ge_0_5c_bad_pair_cost_ge_102_rate": 0.096154
+      },
+      "direct_replication_backtest_2026_05_01": {
+        "source": "scripts/backtest_xuan_proxy_completion_first_v1.py",
+        "first_price_range": "0.40 <= first_price < 0.55",
+        "base_clip": 60,
+        "fill_timeout_s": 2,
+        "bid_improvement_0": {
+          "first_fills": 42,
+          "closed": 31,
+          "exits": 11,
+          "net_pnl": -39.1348,
+          "roi": -0.03126
+        },
+        "bid_improvement_0_005": {
+          "first_fills": 27,
+          "closed": 20,
+          "exits": 7,
+          "net_pnl": -21.9299,
+          "roi": -0.026217
+        },
+        "bid_improvement_0_020": {
+          "first_fills": 14,
+          "closed": 9,
+          "exits": 5,
+          "net_pnl": -84.6669,
+          "roi": -0.102766
+        },
+        "verdict": "xuan-anchored mid-price edge is real, but current high-side maker proxy cannot replicate it; next work must model queue/order timing and first-leg side selection."
+      },
+      "queue_timing_audit": {
+        "source": "scripts/analyze_xuan_queue_timing.py --only-cohort price_040_055_l2_edge_ge_0_5c",
+        "sample_size": 696,
+        "l2_coverage_rate": 1.0,
+        "same_price_visible_before_fill_rate": 0.070402,
+        "same_price_visible_ge_5s_rate": 0.012931,
+        "bid_gte_price_visible_before_fill_rate": 0.308908,
+        "same_price_visible_duration_p50_s": 0.0,
+        "bid_gte_price_visible_duration_p50_s": 0.0,
+        "same_price_public_sell_within_5s_rate": 0.030172,
+        "same_price_public_sell_within_1s_rate": 0.017241,
+        "public_sell_sweep_through_possible_rate": 0.001437,
+        "l2_edge_ge_3c_subset": {
+          "sample_size": 208,
+          "same_price_visible_before_fill_rate": 0.086538,
+          "bid_gte_price_visible_before_fill_rate": 0.730769,
+          "bid_gte_price_visible_duration_p50_s": 2.5805,
+          "cum_bid_size_gt_price_p50": 526.465,
+          "same_price_public_sell_within_5s_rate": 0.0,
+          "public_sell_sweep_through_possible_rate": 0.0
+        },
+        "verdict": "Simple same-price pre-queueing is not the main explanation; most mid-price edge fills are not visible at the same bid level before fill. Research must model deeper-book sweep-through, timestamp effects, and side/timing selection."
+      },
+      "post_move_sensitivity": {
+        "source": "scripts/analyze_xuan_queue_timing.py timestamp shift summary",
+        "mid_price_edge": {
+          "bid_gte_price_visible_rate_at_minus_1s": 0.264368,
+          "bid_gte_price_visible_rate_at_0s": 0.308908,
+          "bid_gte_price_visible_rate_at_plus_1s": 0.708333,
+          "bid_gte_price_visible_rate_at_plus_3s": 0.70977
+        },
+        "l2_edge_ge_3c": {
+          "bid_gte_price_visible_rate_at_0s": 0.730769,
+          "bid_gte_price_visible_rate_at_plus_1s": 0.899038
+        },
+        "post_plus_1s_bid_gte_label": {
+          "true_count": 493,
+          "true_first_winner_rate": 0.5842,
+          "true_pair_cost_p50": 0.975938,
+          "false_count": 203,
+          "false_first_winner_rate": 0.4286,
+          "false_pair_cost_p50": 1.023074
+        },
+        "candidate_pre_signal_buckets": [
+          {
+            "condition": "l2_edge >= 0.03",
+            "n": 208,
+            "post_plus_1s_bid_gte_rate": 0.899,
+            "first_winner_rate": 0.5913,
+            "pair_cost_p50": 0.968397
+          },
+          {
+            "condition": "30s <= first_offset < 60s",
+            "n": 131,
+            "post_plus_1s_bid_gte_rate": 0.7863,
+            "first_winner_rate": 0.6489,
+            "pair_cost_p50": 0.981714
+          },
+          {
+            "condition": "first_spread <= 1 tick",
+            "n": 354,
+            "post_plus_1s_bid_gte_rate": 0.7712,
+            "first_winner_rate": 0.5678,
+            "pair_cost_p50": 0.98688
+          }
+        ],
+        "verdict": "The main edge looks like buying before/during a one-second repricing of the chosen side. Next detector should predict post+1s bid>=entry, not static queueability."
+      },
+      "post_move_signal_formalization": {
+        "source": "scripts/analyze_xuan_post_move_signal.py over xuan_queue_timing_0427_0501_midprice_edge",
+        "baseline": {
+          "sample_size": 696,
+          "post_plus_1s_bid_gte_rate": 0.708333,
+          "first_winner_rate": 0.538793,
+          "pair_cost_p50": 0.992951
+        },
+        "strong_rules": {
+          "l2_edge_ge_3c_and_offset_lt60_and_spread_le_1": {
+            "sample_size": 108,
+            "selected_rate": 0.155172,
+            "post_plus_1s_bid_gte_rate": 0.962963,
+            "first_winner_rate": 0.675926,
+            "pair_cost_p50": 0.940135
+          },
+          "l2_edge_ge_3c_and_spread_le_1": {
+            "sample_size": 140,
+            "selected_rate": 0.201149,
+            "post_plus_1s_bid_gte_rate": 0.95,
+            "first_winner_rate": 0.614286,
+            "pair_cost_p50": 0.958902
+          },
+          "l2_edge_ge_3c": {
+            "sample_size": 208,
+            "selected_rate": 0.298851,
+            "post_plus_1s_bid_gte_rate": 0.899038,
+            "first_winner_rate": 0.591346,
+            "pair_cost_p50": 0.96836,
+            "stability": "improves post+1s label and pair-cost p50 on every available day"
+          }
+        },
+        "transition_decomposition": {
+          "all_upcross_pre_minus1_false_post_plus1_true": {
+            "sample_size": 340,
+            "rate": 0.488506,
+            "first_winner_rate": 0.558824,
+            "pair_cost_p50": 0.977218
+          },
+          "all_already_gte_pre_minus1_and_post_plus1": {
+            "sample_size": 153,
+            "rate": 0.219828,
+            "first_winner_rate": 0.640523,
+            "pair_cost_p50": 0.97
+          },
+          "strict_upcross_pre_minus1_false_post_plus1_true": {
+            "sample_size": 13,
+            "rate": 0.12037,
+            "first_winner_rate": 0.461538,
+            "pair_cost_p50": 0.972453
+          },
+          "strict_already_gte_pre_minus1_and_post_plus1": {
+            "sample_size": 91,
+            "rate": 0.842593,
+            "first_winner_rate": 0.725275,
+            "pair_cost_p50": 0.93872
+          }
+        },
+        "verdict": "Strong xuan post-move rules are real, but the strict high-quality subset is dominated by already_gte before the observed fill. Treat that part as queue/timestamp/synchronization edge, not directly replicable live alpha. The replicable next target is an all-market upcross predictor."
+      },
+      "all_market_upcross_probe_recent_0430_0501": {
+        "source": "scripts/analyze_btc5m_upcross_predictor.py over public BTC 5m replay L1/trades",
+        "status": "research_only_not_execution_backtest",
+        "coverage": {
+          "days": [
+            "2026-04-30",
+            "2026-05-01"
+          ],
+          "markets": 578,
+          "sampled_states": 294481
+        },
+        "baseline": {
+          "bid_jump_1s_ge_3c_rate": 0.071438,
+          "bid_jump_1s_ge_2c_rate": 0.118313,
+          "future_bid_ge_ask_rate": 0.218408,
+          "future_bid_ge_bid_rate": 0.76842
+        },
+        "candidate_replicable_signal": {
+          "condition": "prev_bid_delta_1s >= 0.02 AND 0.40 <= side_bid < 0.55 AND spread_ticks <= 1",
+          "sample_size": 6963,
+          "selected_rate": 0.023645,
+          "bid_jump_1s_ge_3c_rate": 0.140313,
+          "future_bid_ge_ask_rate": 0.364354,
+          "daily_jump_ge_3c_rates": {
+            "2026-04-30": 0.144959,
+            "2026-05-01": 0.134926
+          },
+          "verdict": "Best current public-market upcross signal; roughly doubles 1s >=3c bid jump probability but is not sufficient as a standalone taker strategy."
+        },
+        "rejected_xuan_direct_generalization": {
+          "condition": "offset < 60s AND 0.40 <= side_bid < 0.55 AND spread_ticks <= 1",
+          "sample_size": 26237,
+          "bid_jump_1s_ge_3c_rate": 0.05012,
+          "future_bid_ge_ask_rate": 0.190761,
+          "verdict": "Negative versus all-market baseline; xuan's offset/mid-price/tight-spread evidence cannot be used directly as our live open gate."
+        },
+        "verdict": "Surpass path should use replicable short-momentum/upcross detection plus completion controller, while treating xuan's already_gte/queue-timestamp edge as explanatory but not directly bankable."
+      },
+      "upcross_l1_taker_proxy": {
+        "source": "scripts/backtest_btc5m_upcross_l1_taker.py",
+        "status": "rejected_as_main_strategy",
+        "broad_gate_0430_0501": {
+          "condition": "best_prev_bid_momentum side, prev_bid_delta_1s >= 0.02, 0.40 <= side_bid < 0.55, spread <= 1",
+          "trades": 1132,
+          "completed": 897,
+          "residual": 235,
+          "completion_rate": 0.792403,
+          "first_winner_rate": 0.468198,
+          "pnl": -750.0,
+          "roi": -0.022929,
+          "residual_first_winner_rate": 0.246809,
+          "residual_pnl": -3318.0
+        },
+        "narrow_gate_0427_0501": {
+          "condition": "30s <= offset < 60s, prev_bid_delta_1s >= 0.04, 0.40 <= side_bid < 0.55, spread <= 1",
+          "trades": 317,
+          "completed": 249,
+          "residual": 68,
+          "completion_rate": 0.785489,
+          "first_winner_rate": 0.511041,
+          "pnl": -355.2,
+          "roi": -0.038434,
+          "pair_cost_p50": 0.95,
+          "daily_pnl": {
+            "2026-04-27": -130.8,
+            "2026-04-28": -186.0,
+            "2026-04-29": -139.2,
+            "2026-04-30": -25.2,
+            "2026-05-01": 126.0
+          },
+          "residual_first_winner_rate": 0.25,
+          "residual_pnl": -949.8
+        },
+        "execution_discount_sensitivity_0427_0501": {
+          "condition": "30s <= offset < 60s, prev_bid_delta_1s >= 0.04, 0.40 <= side_bid < 0.55, spread <= 1",
+          "ask": {
+            "pnl": -355.2,
+            "roi": -0.038434,
+            "completion_rate": 0.785489,
+            "pair_cost_p50": 0.95
+          },
+          "bid": {
+            "pnl": -115.2,
+            "roi": -0.012684,
+            "completion_rate": 0.805031,
+            "pair_cost_p50": 0.95
+          },
+          "bid_minus_1c": {
+            "pnl": 49.8,
+            "roi": 0.005601,
+            "completion_rate": 0.814465,
+            "pair_cost_p50": 0.94
+          },
+          "bid_minus_2c": {
+            "pnl": 226.8,
+            "roi": 0.025974,
+            "completion_rate": 0.846395,
+            "pair_cost_p50": 0.94,
+            "daily_pnl": {
+              "2026-04-27": -10.2,
+              "2026-04-28": -41.4,
+              "2026-04-29": 23.4,
+              "2026-04-30": 96.0,
+              "2026-05-01": 159.0
+            }
+          },
+          "xuan_discount_reference": {
+            "strict_already_gte_latest_bid_minus_xuan_price_p50": 0.082283,
+            "strict_already_gte_l2_vwap_minus_xuan_price_p50": 0.096847,
+            "warning": "This observed xuan discount likely includes timestamp/synchronization/queue effects and must not be assumed available to us."
+          }
+        },
+        "maker_fillability_audit": {
+          "source": "scripts/analyze_btc5m_maker_fillability.py",
+          "condition": "30s <= offset < 60s, prev_bid_delta_1s >= 0.04, 0.40 <= side_bid < 0.55, spread <= 1, clip=60",
+          "fill_proxy_definitions": {
+            "optimistic": "public SELL flow reaches order_price within horizon and cumulative size >= clip; ignores visible same-level queue",
+            "queue_full": "optimistic plus cumulative size >= clip + visible same-price queue; still does not fully model higher-price queue refill/cancel dynamics"
+          },
+          "days": {
+            "2026-04-28": {
+              "candidates": 157,
+              "bid_opt30": 0.414013,
+              "bid_full30": 0.178344,
+              "bid_minus_1c_opt30": 0.369427,
+              "bid_minus_1c_full30": 0.197452,
+              "bid_minus_2c_opt30": 0.343949,
+              "bid_minus_2c_full30": 0.165605
+            },
+            "2026-04-30": {
+              "candidates": 141,
+              "bid_opt30": 0.48227,
+              "bid_full30": 0.248227,
+              "bid_minus_1c_opt30": 0.404255,
+              "bid_minus_1c_full30": 0.198582,
+              "bid_minus_2c_opt30": 0.340426,
+              "bid_minus_2c_full30": 0.177305
+            },
+            "2026-05-01": {
+              "candidates": 113,
+              "bid_opt30": 0.451327,
+              "bid_full30": 0.221239,
+              "bid_minus_1c_opt30": 0.362832,
+              "bid_minus_1c_full30": 0.123894,
+              "bid_minus_2c_opt30": 0.300885,
+              "bid_minus_2c_full30": 0.123894
+            }
+          },
+          "verdict": "Bid-1c/bid-2c is not freely scalable: 30s optimistic fill is only about 30-40%, queue-aware is closer to 12-20%, and fillability does not explain losing days. The next backtest must only open after fill proxy triggers, and enforce still requires own maker fill truth."
+        },
+        "fill_triggered_maker_fastcancel": {
+          "source": "scripts/backtest_btc5m_maker_fill_triggered.py",
+          "status": "best_current_public_replay_sidecar_candidate_not_main_engine",
+          "condition": "40s <= offset < 60s, prev_bid_delta_1s >= 0.05, 0.40 <= side_bid < 0.50, spread <= 1, top_bid_sz <= 250",
+          "execution": {
+            "first_order_price": "best_bid",
+            "fill_model": "queue_full",
+            "first_fill_timeout_s": 15,
+            "completion_pair_ceiling": 0.95,
+            "completion_deadline_s": 30,
+            "repair_pair_ceiling": 1.04,
+            "repair_deadline_s": 60
+          },
+          "clip_sensitivity_2026_04_27_to_2026_05_01": {
+            "base_side_bid_lt_55_clip60": {
+              "attempts": 166,
+              "fills": 33,
+              "fill_rate": 0.198795,
+              "completed": 30,
+              "residual": 3,
+              "pnl": 119.4,
+              "roi_on_filled_spend": 0.12781,
+              "pair_cost_p50": 0.94,
+              "positive_days": "4/5",
+              "daily_pnl": {
+                "2026-04-27": -1.8,
+                "2026-04-28": 37.8,
+                "2026-04-29": 32.4,
+                "2026-04-30": 31.2,
+                "2026-05-01": 19.8
+              }
+            },
+            "base_side_bid_lt_55_clip120": {
+              "attempts": 166,
+              "fills": 21,
+              "fill_rate": 0.1265,
+              "completed": 20,
+              "residual": 1,
+              "pnl": 60.0,
+              "roi_on_filled_spend": 0.051,
+              "positive_days": "3/5"
+            },
+            "base_side_bid_lt_55_clip160": {
+              "attempts": 166,
+              "fills": 17,
+              "fill_rate": 0.1024,
+              "completed": 16,
+              "residual": 1,
+              "pnl": 40.0,
+              "roi_on_filled_spend": 0.031,
+              "positive_days": "3/5"
+            },
+            "side_bid_lt_50_clip60": {
+              "attempts": 110,
+              "fills": 25,
+              "fill_rate": 0.2273,
+              "completed": 24,
+              "residual": 1,
+              "pnl": 103.8,
+              "roi_on_filled_spend": 0.1523,
+              "positive_days": "5/5",
+              "daily_pnl": {
+                "2026-04-27": 21.6,
+                "2026-04-28": 32.4,
+                "2026-04-29": 30.6,
+                "2026-04-30": 2.4,
+                "2026-05-01": 16.8
+              }
+            },
+            "side_bid_lt_50_clip120": {
+              "attempts": 110,
+              "fills": 16,
+              "fill_rate": 0.1455,
+              "completed": 16,
+              "residual": 0,
+              "pnl": 87.6,
+              "roi_on_filled_spend": 0.1018,
+              "positive_days": "4/5",
+              "daily_pnl": {
+                "2026-04-27": 28.8,
+                "2026-04-28": 10.8,
+                "2026-04-29": 42.0,
+                "2026-04-30": -2.4,
+                "2026-05-01": 8.4
+              }
+            }
+          },
+          "xuan_overlap": {
+            "candidate_attempts": 166,
+            "candidate_markets_with_xuan_trade": 106,
+            "candidate_fills": 33,
+            "filled_markets_with_xuan_trade": 19,
+            "xuan_first_offset_p50_in_candidate_markets_s": 16.0,
+            "xuan_first_offset_p50_in_filled_markets_s": 18.0,
+            "interpretation": "This is a late confirmation sidecar in xuan-active markets, not a full reconstruction of xuan's earlier main engine."
+          },
+          "early_offset_probe": {
+            "status": "research_only_not_default",
+            "common_condition": "10s <= offset < window_end, 0.40 <= side_bid < 0.55, spread <= 1, top_bid_sz <= 250, best_bid queue_full, 15s cancel, clip=60",
+            "windows": {
+              "10_40_delta5c": {
+                "attempts": 241,
+                "fills": 29,
+                "completed": 20,
+                "residual": 9,
+                "pnl": -77.4,
+                "roi_on_filled_spend": -0.0944,
+                "positive_days": "2/5"
+              },
+              "10_20_delta5c": {
+                "attempts": 77,
+                "fills": 5,
+                "completed": 3,
+                "residual": 2,
+                "pnl": 86.4,
+                "roi_on_filled_spend": 0.6429,
+                "positive_days": "3/5"
+              },
+              "10_20_delta4c": {
+                "attempts": 124,
+                "fills": 10,
+                "completed": 7,
+                "residual": 3,
+                "pnl": 61.2,
+                "roi_on_filled_spend": 0.2152,
+                "positive_days": "3/5"
+              },
+              "10_20_delta4c_side_bid_lt_50c": {
+                "attempts": 68,
+                "fills": 7,
+                "completed": 5,
+                "residual": 2,
+                "pnl": 91.2,
+                "roi_on_filled_spend": 0.481,
+                "positive_days": "4/5"
+              },
+              "10_20_delta4c_opp_spread_le_1": {
+                "attempts": 124,
+                "fills": 10,
+                "completed": 7,
+                "residual": 3,
+                "pnl": 61.2,
+                "roi_on_filled_spend": 0.2152,
+                "positive_days": "3/5",
+                "verdict": "No improvement versus delta4c baseline; early quality is driven by side_bid<50c rather than opposite spread."
+              }
+            },
+            "verdict": "The 10-20s window aligns with xuan's first-offset distribution and has high ROI but too few fills. Filtering out side_bid >= 50c improves stability, suggesting xuan's early edge may avoid overheated first legs. Broad 10-40s fails, so the late sidecar cannot simply be moved earlier without additional direction or book-recovery filters."
+          },
+          "dual_window_fastcancel_candidate": {
+            "status": "best_current_shadow_sidecar_not_main_engine",
+            "source": "scripts/analyze_dual_window_fastcancel_combo.py",
+            "early_window": "10s <= offset < 20s, prev_bid_delta_1s >= 0.04, 0.40 <= side_bid < 0.50",
+            "late_window": "40s <= offset < 60s, prev_bid_delta_1s >= 0.05, 0.40 <= side_bid < 0.50",
+            "common_execution": "best_bid, queue_full, top_bid_sz<=250, 15s cancel, default clip=60, optional shadow upclip=120, completion ceiling 0.95, slow99/pair98 continuation, repair ceiling 1.04",
+            "combined_state_machine_proxy": {
+              "attempts": 178,
+              "fills": 32,
+              "completion": 19,
+              "repair": 10,
+              "residual_settle": 3,
+              "pnl": 195.0,
+              "spend_est": 1725.0,
+              "roi_est": 0.113,
+              "positive_days": "5/5",
+              "daily_pnl": {
+                "2026-04-27": 64.2,
+                "2026-04-28": 39.0,
+                "2026-04-29": 70.8,
+                "2026-04-30": 4.2,
+                "2026-05-01": 16.8
+              }
+            },
+            "xuan_alignment": {
+              "combo_selected_markets": 173,
+              "combo_filled_markets": 32,
+              "selected_markets_with_xuan_trade": "107/173",
+              "filled_markets_with_xuan_trade": "21/32",
+              "xuan_in_combo_selected_markets_roi": 0.0125,
+              "xuan_in_combo_filled_markets_roi": 0.0251,
+              "xuan_not_combo_roi": 0.022,
+              "same_side_xuan_near_candidate_attempts": "71/178",
+              "same_side_xuan_near_fill": "10/32",
+              "verdict": "Combo is not xuan's main engine. Treat it as an independent market-side fast-cancel edge inspired by xuan research."
+            },
+            "residual_exit_sensitivity": {
+              "official_settlement": {
+                "pnl": 195.0,
+                "positive_days": "5/5"
+              },
+              "force_sell_first_leg_bid_after_30s": {
+                "pnl": 73.2,
+                "positive_days": "4/5",
+                "daily_pnl": {
+                  "2026-04-27": 21.6,
+                  "2026-04-28": 0.0,
+                  "2026-04-29": 30.6,
+                  "2026-04-30": 4.2,
+                  "2026-05-01": 16.8
+                }
+              },
+              "force_sell_first_leg_bid_after_60s": {
+                "pnl": 67.2,
+                "positive_days": "4/5"
+              },
+              "force_sell_first_leg_bid_after_120s": {
+                "pnl": 118.2,
+                "positive_days": "5/5",
+                "daily_pnl": {
+                  "2026-04-27": 62.4,
+                  "2026-04-28": 3.6,
+                  "2026-04-29": 31.2,
+                  "2026-04-30": 4.2,
+                  "2026-05-01": 16.8
+                }
+              },
+              "force_sell_first_leg_bid_after_180s": {
+                "pnl": 156.0,
+                "positive_days": "5/5"
+              },
+              "force_sell_l2_bid_vwap_after_120s": {
+                "pnl": 118.2,
+                "positive_days": "5/5",
+                "unfilled_qty_after_l2_sweep": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              }
+            },
+            "non_clean_exit_sensitivity": {
+              "replace_repair_and_residual_with_l2_sell_after_30s": {
+                "pnl": 26.8114,
+                "positive_days": "4/5"
+              },
+              "replace_repair_and_residual_with_l2_sell_after_60s": {
+                "pnl": 44.328,
+                "positive_days": "3/5"
+              },
+              "replace_repair_and_residual_with_l2_sell_after_90s": {
+                "pnl": 113.027,
+                "positive_days": "4/5"
+              },
+              "replace_repair_and_residual_with_l2_sell_after_120s": {
+                "pnl": 144.0999,
+                "positive_days": "5/5",
+                "replacement_path_pnl": {
+                  "repair": 27.1,
+                  "residual_settle": 24.6
+                }
+              },
+              "replace_repair_and_residual_with_l2_sell_after_180s": {
+                "pnl": 239.8943,
+                "positive_days": "5/5"
+              },
+              "verdict": "120s L2 bid VWAP forced sell is the current shadow baseline for all non-clean closes. 180s is higher PnL but longer single-leg exposure; 30-60s exits are too punitive."
+            },
+            "l2_completion_reprice": {
+              "base_queue_full": {
+                "raw_pnl": 195.0,
+                "l2_completion_residual120_pnl": 116.6502,
+                "l2_completion_residual120_positive_days": "5/5",
+                "l2_plus_0_5c_friction_pnl": 107.0502,
+                "l2_plus_1c_friction_pnl": 97.4502,
+                "l2_plus_2c_friction_pnl": 78.2502,
+                "second_leg_vwap_delta_avg": 0.000891,
+                "second_leg_vwap_delta_max": 0.009167
+              },
+              "verdict": "L1 completion was optimistic versus L2 VWAP, but corrected L2 PnL remains positive. Extra friction >=1c makes weak days negative, so live completion VWAP drift must be <0.5c for enforce."
+            },
+            "slow_continuation_gate": {
+              "strict_slow95_pair95": {
+                "condition": "min_pair_cost_seen_30s <= 0.95, then wait until 120s for pair_cost <= 0.95",
+                "verdict": "No effect on this sidecar. Non-completed rows usually saw only 0.97-1.00 pair-cost evidence in the first 30s."
+              },
+              "slow99_pair98": {
+                "condition": "min_pair_cost_seen_30s <= 0.99, then wait until 120s for pair_cost <= 0.98",
+                "attempts": 178,
+                "fills": 32,
+                "paths": {
+                  "completion": 19,
+                  "slow_completion": 5,
+                  "repair": 5,
+                  "residual_settle": 3
+                },
+                "raw_pnl": 208.8,
+                "l2_completion_pnl": 130.4502,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 9.1002,
+                "l2_plus_0_5c_friction_pnl": 120.8502,
+                "l2_plus_1c_friction_pnl": 111.2502,
+                "l2_plus_2c_friction_pnl": 92.0502
+              },
+              "verdict": "The xuan slow-path idea partially transfers only with a looser evidence threshold. Use slow99/pair98 in shadow, always bounded by 120s non-clean exit; do not infer this is xuan's main slow-profit engine."
+            },
+            "wide_param_search": {
+              "source": "scripts/search_fastcancel_from_rows.py over emit-all candidate rows",
+              "candidate_rows": 8317,
+              "searched_parameter_sets": 26484,
+              "batch_l2_validator": "scripts/validate_fastcancel_l2_candidates.py",
+              "raw_top_candidate": {
+                "condition": "40s<=offset<60s, prev_bid_delta_1s>=0.06, 0.40<=side_bid<0.55, spread<=2, opp_spread<=2, top_bid_sz<=100, immediate_pair_cost<=1.00",
+                "attempts": 105,
+                "fills": 31,
+                "paths": {
+                  "completion": 20,
+                  "slow_completion": 4,
+                  "repair": 5,
+                  "residual_settle": 2
+                },
+                "raw_pnl": 171.0,
+                "raw_positive_days": "5/5",
+                "raw_weakest_day_pnl": 19.8,
+                "l2_completion_pnl": 114.6502,
+                "l2_positive_days": "4/5",
+                "l2_weakest_day_pnl": -4.9
+              },
+              "best_single_window_after_batch_l2": {
+                "condition": "40s<=offset<60s, prev_bid_delta_1s>=0.06, 0.40<=side_bid<0.55, spread<=1, top_bid_sz<=100",
+                "attempts": 84,
+                "fills": 26,
+                "raw_pnl": 130.8,
+                "l2_completion_pnl": 124.8502,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 13.7,
+                "l2_plus_1c_friction_pnl": 109.2502,
+                "l2_plus_2c_friction_pnl": 93.6502
+              },
+              "early_plus_late_delta6_top100_combo": {
+                "condition": "early 10-20s delta>=4c side_bid<50c plus late 40-60s delta>=6c side_bid<55c spread<=2 top_bid_sz<=100",
+                "attempts": 172,
+                "fills": 38,
+                "raw_pnl": 262.2,
+                "l2_completion_pnl_120s_residual_exit": 164.4502,
+                "l2_positive_days_120s": "5/5",
+                "l2_weakest_day_pnl_120s": 1.7,
+                "l2_completion_pnl_180s_residual_exit": 212.067,
+                "l2_positive_days_180s": "5/5",
+                "l2_weakest_day_pnl_180s": 19.8,
+                "l2_plus_1c_friction_pnl_180s": 189.267,
+                "l2_plus_2c_friction_pnl_180s": 166.467,
+                "l2_completion_pnl_conditional_residual_exit": 213.867,
+                "conditional_residual_exit_policy": "if first_price < 0.50 use 180s L2 bid VWAP exit, else use 120s L2 bid VWAP exit",
+                "l2_positive_days_conditional_exit": "5/5",
+                "l2_weakest_day_pnl_conditional_exit": 19.8,
+                "l2_plus_1c_friction_pnl_conditional_exit": 191.067,
+                "l2_plus_2c_friction_pnl_conditional_exit": 168.267
+              },
+              "verdict": "Raw search is useful for candidate generation only. Batch L2 validation finds a robust single-window late variant and an aggressive early+late variant. The aggressive variant is higher PnL; conditional residual exit is preferred over fixed 180s but remains shadow-only until longer sample and own exit truth validate it."
+            },
+            "clip_capacity_stress": {
+              "clip_60": {
+                "attempts": 178,
+                "fills": 32,
+                "raw_pnl": 195.0,
+                "l2_completion_pnl": 116.6502,
+                "l2_positive_days": "5/5",
+                "weakest_l2_day_pnl": 3.1,
+                "max_tested_slippage_all_days_positive": 0.005
+              },
+              "clip_120": {
+                "attempts": 178,
+                "fills": 19,
+                "raw_pnl": 121.2,
+                "l2_completion_pnl": 119.0002,
+                "l2_positive_days": "5/5",
+                "weakest_l2_day_pnl": 3.7002,
+                "max_tested_slippage_all_days_positive": 0.005
+              },
+              "clip_160": {
+                "attempts": 178,
+                "fills": 14,
+                "raw_pnl": 110.4,
+                "l2_completion_pnl": 107.458,
+                "l2_positive_days": "4/5",
+                "weakest_l2_day_pnl": -3.2,
+                "max_tested_slippage_all_days_positive": null
+              },
+              "verdict": "Capacity is not linear. Fixed clip 120/160 are not default candidates because larger clip loses fills and changes the selected sample. Upclip must be state-dependent."
+            },
+            "dynamic_upclip_stress": {
+              "base": {
+                "condition": "fixed clip=60",
+                "fills": 38,
+                "raw_pnl": 262.2,
+                "l2_completion_pnl": 213.867,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 19.8,
+                "l2_plus_2c_friction_pnl": 168.267
+              },
+              "leader": {
+                "condition": "default clip=60; if prev_bid_delta_1s >= 0.14 then clip=160",
+                "fills": 37,
+                "raw_pnl": 287.0,
+                "l2_completion_pnl": 238.217,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 19.8,
+                "l2_plus_1c_friction_pnl": 213.017,
+                "l2_plus_2c_friction_pnl": 187.817
+              },
+              "frequency_expanded_leader": {
+                "condition": "early 10-20s delta>=4c side_bid<50c plus 30-60s delta>=5c side_bid<55c spread<=2 top_bid_sz<=100; default clip=60; if prev_bid_delta_1s >= 0.14 then clip=160",
+                "attempts": 237,
+                "fills": 46,
+                "raw_pnl": 284.6,
+                "l2_completion_pnl": 259.2029,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 22.8,
+                "l2_plus_1c_friction_pnl": 228.6029,
+                "l2_plus_2c_friction_pnl": 198.0029,
+                "alternate_if_completion_friction_high": {
+                  "condition": "same, but upclip only when prev_bid_delta_1s >= 0.15",
+                  "fills": 45,
+                  "raw_pnl": 248.2,
+                  "l2_completion_pnl": 250.4029,
+                  "l2_plus_2c_friction_pnl": 192.4029
+                },
+                "l2_plus_3c_friction_pnl": 167.4029,
+                "l2_plus_4c_friction_pnl": 136.8029,
+                "l2_plus_5c_friction_pnl": 106.2029
+              },
+              "runner_up": {
+                "condition": "default clip=60; if top_bid_sz <= 6.21 then clip=160",
+                "fills": 36,
+                "raw_pnl": 278.4,
+                "l2_completion_pnl": 229.067,
+                "l2_positive_days": "5/5",
+                "l2_weakest_day_pnl": 19.8,
+                "l2_plus_2c_friction_pnl": 179.867
+              },
+              "verdict": "The current leader is 30-60s delta>=5c plus pre-trade strong-state upclip. Delta>=4c is rejected; further fitting on the 5-day sample should stop until shadow truth arrives.",
+              "rejected_too_loose_delta4": {
+                "condition": "same but 30-60s delta>=4c",
+                "attempts": 315,
+                "fills": 63,
+                "raw_pnl": 228.2,
+                "l2_completion_pnl": 169.8487,
+                "l2_positive_days": "4/5",
+                "l2_weakest_day_pnl": -16.7028,
+                "verdict": "Reject for shadow default: too many low-quality states; 2026-05-01 turns negative."
+              },
+              "residual_exit_policy_stress": {
+                "fixed_120s": {
+                  "l2_pnl": 205.1054,
+                  "positive_days": "5/5",
+                  "weakest_day_pnl": 5.2052,
+                  "l2_plus_2c_friction_pnl": 143.9054,
+                  "l2_plus_2c_positive_days": "4/5"
+                },
+                "min_pair_lte_101_180_else_120": {
+                  "l2_pnl": 254.5222,
+                  "positive_days": "5/5",
+                  "weakest_day_pnl": 22.8,
+                  "l2_plus_2c_friction_pnl": 193.3222,
+                  "l2_plus_2c_positive_days": "5/5"
+                },
+                "first_price_lt_050_180_else_120": {
+                  "l2_pnl": 259.2029,
+                  "positive_days": "5/5",
+                  "weakest_day_pnl": 22.8,
+                  "l2_plus_2c_friction_pnl": 198.0029,
+                  "l2_plus_2c_positive_days": "5/5"
+                }
+              }
+            },
+            "maker_queue_stress": {
+              "queue_full": {
+                "attempts": 178,
+                "fills": 32,
+                "pnl": 195.0,
+                "roi_est": 0.113,
+                "positive_days": "5/5",
+                "paths": {
+                  "completion": 19,
+                  "repair": 10,
+                  "residual_settle": 3
+                }
+              },
+              "queue_full_plus_60": {
+                "attempts": 178,
+                "fills": 19,
+                "pnl": 57.6,
+                "roi_est": 0.0532,
+                "positive_days": "5/5",
+                "l2_completion_pnl": 56.0502,
+                "l2_plus_0_5c_friction_pnl": 50.3502,
+                "l2_plus_1c_friction_pnl": 44.6502,
+                "paths": {
+                  "completion": 13,
+                  "repair": 6,
+                  "residual_settle": 0
+                }
+              },
+              "queue_full_plus_120": {
+                "attempts": 178,
+                "fills": 11,
+                "pnl": 20.4,
+                "roi_est": 0.0319,
+                "positive_days": "3/5",
+                "l2_completion_pnl": 19.9,
+                "l2_plus_0_5c_friction_pnl": 16.6,
+                "l2_plus_1c_friction_pnl": 13.3,
+                "paths": {
+                  "completion": 6,
+                  "repair": 5,
+                  "residual_settle": 0
+                }
+              },
+              "verdict": "The edge survives moderate queue disadvantage (+60 shares) but becomes too weak at +120. Shadow must measure own extra_required_size_equivalent before enforce."
+            },
+            "warning": "Residual-settle rows use official outcome valuation. A 120s forced-sell replacement remains positive in replay, but live enforce still requires sell-side fill/slippage modelling."
+          },
+          "verdict": "First public-replay candidate family with queue-aware fill trigger, low residual count, and positive 5-day PnL. The edge comes from fast cancel, side_bid<50c quality filtering, and avoiding overheated first legs. Capacity is still small and must be validated with own maker fill truth plus residual exit before enforce."
+        },
+        "verdict": "Short-momentum upcross fails as a taker strategy and as a 30s passive wait. It becomes viable only when converted into a queue-aware maker sidecar with fast cancel and strict top-of-book liquidity filter; this is still small-capacity and not yet xuan's main engine."
+      },
+      "next_validation": [
+        "translate xuan-anchored exec_edge/post-move labels into an all-market upcross predictor",
+        "separate replicable upcross edge from non-replicable already_gte queue/timestamp edge",
+        "backtest prev_bid_delta_1s>=2c upcross gate with maker-fill and bounded-taker variants",
+        "research residual winner-proxy for uncompleted upcross candidates before increasing clip",
+        "measure whether our own maker orders can actually fill at bid-1c/bid-2c in the selected short-momentum window",
+        "build fill-triggered maker proxy PnL, not assumption-filled bid-2c PnL",
+        "run deeper-book sweep-through counterfactual on the selected states",
+        "compare maker-only vs bounded-taker/hybrid fillability",
+        "require residual-adjusted positive PnL, not closed-only surplus",
+        "validate the fast-cancel maker sidecar with own dry-run maker order truth",
+        "search for an earlier 10-30s version of the same fill-quality signal to close the gap to xuan's first-offset distribution",
+        "validate clip=120 only as a strong-state shadow upclip; keep clip=160 out of default until it is positive across days",
+        "shadow-test slow99/pair98 continuation and measure whether live completion VWAP drift stays below 1c",
+        "keep the two-stage research workflow: emit-all raw search for candidate generation, then L2 completion/non-clean exit validation for final ranking",
+        "run the aggressive early+late delta6/top100 180s residual-exit variant as shadow-only and compare residual exit VWAP drift against 120s default"
+      ]
+    },
+    {
+      "name": "winner_proxy_price80_90_fill2_residual_classifier_v2",
+      "intent": "current best small-positive edge: high winner-proxy first leg, fast fill, bounded completion, selective residual hold",
+      "open_filter": {
+        "min_offset_s": 60,
+        "max_offset_s": 240,
+        "min_first_price": 0.8,
+        "max_first_price": 0.9,
+        "first_fill_timeout_s": 2
+      },
+      "completion_schedule": [
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 0.95
+        }
+      ],
+      "slow_continuation": {
+        "enabled": true,
+        "threshold": 0.95,
+        "ceiling": 0.95,
+        "deadline_s": 240
+      },
+      "repair_exit": {
+        "repair_ceiling": 1.04,
+        "repair_deadline_s": 60,
+        "exit_start_s": 60,
+        "exit_deadline_s": 75,
+        "exit_max_loss": 0.04
+      },
+      "residual_hold_policy": {
+        "name": "price_084_086_or_offset_120_150",
+        "condition": "hold residual if 0.84 <= first_price < 0.86 OR 120s <= candidate_offset_s < 150s",
+        "status": "research_shadow_only",
+        "warning": "Fit on 24 exited rows; needs out-of-sample validation before live."
+      },
+      "evidence": {
+        "source": "2026-04-27..2026-05-01 row-level residual policy search",
+        "base_clip_60_always_exit_net_pnl": 16.6844,
+        "base_clip_60_policy_net_pnl": 86.5988,
+        "base_clip_60_policy_min_day_pnl": -1.1253,
+        "base_clip_60_policy_positive_days": "4/5",
+        "first_winner_rate": 0.885496,
+        "closed_weighted_pair_cost": 0.973712,
+        "warning": "Still far below xuan: low opportunity frequency and not all days positive."
+      }
+    },
+    {
+      "name": "surpass_alpha_profit095_repair103",
+      "intent": "maximize surplus_per_size; accept lower close rate in shadow",
+      "completion_schedule": [
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 0.95
+        }
+      ],
+      "repair": {
+        "enabled": true,
+        "ceiling": 1.03,
+        "deadline_s": 90,
+        "trigger": "min_pair_cost_seen_in_first_30s > 0.95 OR missing"
+      },
+      "evidence": {
+        "source": "2026-05-01 full-day scan",
+        "closed_rate_among_first_fills": 0.793277,
+        "surplus_per_size": 0.024376,
+        "pair_cost_p50": 0.95
+      }
+    },
+    {
+      "name": "surpass_balanced_profit095_repair104",
+      "intent": "push close rate near xuan while trying to keep surplus_per_size above xuan",
+      "completion_schedule": [
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 0.95
+        }
+      ],
+      "repair": {
+        "enabled": true,
+        "ceiling": 1.04,
+        "deadline_s": 90,
+        "trigger": "min_pair_cost_seen_in_first_30s > 0.95 OR missing"
+      },
+      "evidence": {
+        "source": "2026-05-01 full-day scan",
+        "closed_rate_among_first_fills": 0.801997,
+        "surplus_per_size": 0.020827,
+        "pair_cost_p50": 0.95,
+        "first_fills_per_attempt_market": 2.123675,
+        "closed_pairs_per_attempt_market": 1.70318,
+        "actual_closed_clip_p50": 30.0,
+        "warning": "04-30/05-01 combined drops to surplus_per_size 0.016436; not stable enough for enforce."
+      }
+    },
+    {
+      "name": "late_midprice_quality_filter",
+      "intent": "test low-frequency high-quality open window",
+      "open_filter": {
+        "min_offset_s": 180,
+        "max_offset_s": 240,
+        "min_first_price": 0.55,
+        "max_first_price": 0.7
+      },
+      "completion_schedule": [
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 0.95
+        }
+      ],
+      "repair": {
+        "enabled": true,
+        "ceiling": 1.04,
+        "deadline_s": 90
+      },
+      "evidence": {
+        "source": "filtered analysis from 2026-04-30/2026-05-01 rows",
+        "closed_rate_among_first_fills": 0.846154,
+        "surplus_per_size": 0.034239,
+        "warning": "2026-04-29 direct run closed_rate 0.907216 but surplus_per_size only 0.013138 at repair104; filter is not stable yet."
+      }
+    }
+  ],
+  "decision": {
+    "shadow_package": {
+      "config": "configs/xuan/fastcancel_shadow_sidecar_v1.json",
+      "runbook": "docs/research/FASTCANCEL_SHADOW_SIDECAR_V1_ZH.md",
+      "replay_pipeline_script": "scripts/run_fastcancel_shadow_replay_pipeline.py",
+      "live_shadow_observer_script": "scripts/run_fastcancel_live_shadow_observer.py",
+      "replay_event_fixture_script": "scripts/emit_fastcancel_shadow_events_from_replay.py",
+      "shadow_event_report_script": "scripts/summarize_fastcancel_shadow_events.py",
+      "status": "ready_for_shadow_runner_implementation_no_enforce"
+    },
+    "implement_next": [
+      "frequency_expanded_dual_window_fastcancel_shadow_sidecar",
+      "winner_proxy_price80_90_fill2_residual_classifier_v2_as_secondary_sidecar"
+    ],
+    "must_add_before_enforce": [
+      "own_maker_fill_truth_extra_required_size_equivalent",
+      "completion_vwap_drift_vs_replay_l2",
+      "conditional_residual_exit_vwap_truth_120s_vs_180s",
+      "dynamic_upclip_shadow_only_prev_delta_ge_0_14_to_clip160",
+      "effective_clip_and_upclip_reason_reporting",
+      "residual_adjusted_pnl_reporting"
+    ],
+    "keep_research_only": [
+      "late_midprice_quality_filter",
+      "fixed_clip_120_or_160_fastcancel",
+      "mid_price_execution_edge_main_track_until_fillability_is_proven",
+      "aggressive_conditional_residual_exit_until_longer_sample_and_own_truth_validate"
+    ],
+    "reason": "The frequency-expanded dual-window fast-cancel candidate now passes replay shadow-readiness: 5-day L2 PnL +$259.20, 5/5 positive days, and +5c friction remains positive. It is still too small to surpass xuan by itself; enforce is blocked until own fill truth confirms queue_full to queue_full+60 quality, completion VWAP drift, and conditional residual exit VWAP."
+  },
+  "residual_risk_findings": {
+    "repair103_2026_05_01": {
+      "closed_surplus_usdc": 361.6178,
+      "residual_settlement_pnl_usdc": -1606.2,
+      "residual_adjusted_pnl_usdc": -1244.5822,
+      "residual_loser_count": 96,
+      "residual_winner_count": 27
+    },
+    "repair104_2026_05_01": {
+      "closed_surplus_usdc": 316.7771,
+      "residual_settlement_pnl_usdc": -1629.3,
+      "residual_adjusted_pnl_usdc": -1312.5229,
+      "residual_loser_count": 95,
+      "residual_winner_count": 24
+    },
+    "repair110_2026_05_01": {
+      "closed_surplus_usdc": -34.7775,
+      "residual_settlement_pnl_usdc": -1233.45,
+      "residual_adjusted_pnl_usdc": -1268.2275,
+      "residual_loser_count": 65,
+      "residual_winner_count": 9
+    },
+    "interpretation": "Closed-pair surplus is not enough; unclosed loser residuals dominate. Current candidates are shadow-only until EmergencyExit is validated."
+  },
+  "v1_1_risk_patch": {
+    "after_30s": [
+      {
+        "condition": "min_pair_cost_seen_in_first_30s <= 0.95",
+        "action": "allow_slow_continuation_with_timer"
+      },
+      {
+        "condition": "min_pair_cost_seen_in_first_30s > 0.95 OR missing",
+        "action": "enter_emergency_exit"
+      }
+    ],
+    "emergency_exit_candidates": [
+      "aggressive_pair_repair",
+      "sell_first_leg_stop_loss",
+      "hard_no_reentry_until_flat"
+    ],
+    "enforce_blocking_metrics": {
+      "residual_count_over_first_fills_max": 0.05,
+      "residual_loser_count_over_first_fills_max": 0.02,
+      "residual_adjusted_pnl_min": 0.0,
+      "residual_adjusted_roi_on_total_spend_min": 0.0
+    }
+  },
+  "hard_warnings": [
+    "Do not enforce live from this config.",
+    "Queue position is unknown; public SELL flow is only a fillability proxy.",
+    "Surpassing xuan on surplus_per_size while under-closing can still be a bad live strategy if residuals are not repaired.",
+    "The next required validation is own dry-run/execution truth, not more xuan queue inference."
+  ]
+}

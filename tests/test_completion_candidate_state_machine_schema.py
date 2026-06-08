@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from collections import defaultdict
 from types import SimpleNamespace
@@ -86,6 +87,88 @@ class CompletionCandidateStateMachineSchemaTests(unittest.TestCase):
         self.assertEqual(out["official_taker_fee"], 0.168)
         self.assertEqual(out["fee_after_pnl"], 19.832)
         self.assertEqual(out["net_pnl"], 19.832)
+
+    def test_sizing_override_fields_keep_stable_types_with_zero_rows(self) -> None:
+        fieldnames = [
+            "candidate_id",
+            "target_qty_effective",
+            "max_open_cost_effective",
+            "sizing_override_id",
+            "sizing_override_key_type",
+            "sizing_override_key",
+        ]
+        con = duckdb.connect(":memory:")
+        state_machine.create_table_from_rows(con, "candidate_registry", [], fieldnames)
+        schema = {row[0]: row[1] for row in con.execute("DESCRIBE candidate_registry").fetchall()}
+
+        self.assertEqual(schema["target_qty_effective"], "DOUBLE")
+        self.assertEqual(schema["max_open_cost_effective"], "DOUBLE")
+        self.assertEqual(schema["sizing_override_id"], "VARCHAR")
+        self.assertEqual(schema["sizing_override_key_type"], "VARCHAR")
+        self.assertEqual(schema["sizing_override_key"], "VARCHAR")
+
+    def test_sizing_overrides_resolve_by_priority_and_inherit_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sizing.csv"
+            path.write_text(
+                "sizing_override_id,candidate_row_id,condition_id,slug,target_qty,max_open_cost,enabled\n"
+                "by_condition,,0xabc,,7,,true\n"
+                "by_candidate,42,,,3,12,true\n"
+                "disabled,,0xdisabled,,,,false\n",
+                encoding="utf-8",
+            )
+            overrides = state_machine.load_sizing_overrides_csv(path)
+
+        args = SimpleNamespace(target_qty=5.0, max_open_cost=50.0, sizing_overrides=overrides)
+        by_candidate = state_machine.effective_sizing_for_row(
+            args,
+            {"candidate_row_id": 42, "condition_id": "0xabc", "slug": "slug-a"},
+        )
+        by_condition = state_machine.effective_sizing_for_row(
+            args,
+            {"candidate_row_id": 43, "condition_id": "0xabc", "slug": "slug-a"},
+        )
+        disabled = state_machine.effective_sizing_for_row(
+            args,
+            {"candidate_row_id": 44, "condition_id": "0xdisabled", "slug": "slug-b"},
+        )
+        defaulted = state_machine.effective_sizing_for_row(
+            args,
+            {"candidate_row_id": 45, "condition_id": "0xmissing", "slug": "slug-c"},
+        )
+
+        self.assertEqual(by_candidate.target_qty, 3.0)
+        self.assertEqual(by_candidate.max_open_cost, 12.0)
+        self.assertEqual(by_candidate.override_id, "by_candidate")
+        self.assertEqual(by_candidate.override_key_type, "candidate_row_id")
+        self.assertEqual(by_condition.target_qty, 7.0)
+        self.assertEqual(by_condition.max_open_cost, 50.0)
+        self.assertEqual(by_condition.override_id, "by_condition")
+        self.assertFalse(disabled.enabled)
+        self.assertEqual(disabled.target_qty, 5.0)
+        self.assertEqual(disabled.max_open_cost, 50.0)
+        self.assertIsNone(defaulted.override_id)
+        self.assertEqual(defaulted.target_qty, 5.0)
+        self.assertEqual(defaulted.max_open_cost, 50.0)
+
+    def test_sizing_overrides_reject_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_sizing.csv"
+            path.write_text(
+                "condition_id,target_qty,max_open_cost,enabled\n"
+                "0xabc,-1,10,true\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "target_qty must be positive"):
+                state_machine.load_sizing_overrides_csv(path)
+
+            path.write_text(
+                "condition_id,target_qty,max_open_cost,enabled\n"
+                "0xabc,,10,maybe\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "enabled must be boolean"):
+                state_machine.load_sizing_overrides_csv(path)
 
 
 if __name__ == "__main__":

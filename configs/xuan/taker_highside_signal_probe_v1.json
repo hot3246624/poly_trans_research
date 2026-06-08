@@ -1,0 +1,42 @@
+{
+  "schema": "taker_highside_signal_probe_v1",
+  "notes": "Research-only probe for xuan-like taker-first high-side entry buckets.",
+  "modes": [
+    {
+      "name": "taker_high_050_055_clip60",
+      "offset_start_s": 0,
+      "offset_end_s": 240,
+      "first_price_min": 0.50,
+      "first_price_max": 0.55,
+      "clip_size": 60,
+      "residual_cap_qty_candidates": [60]
+    },
+    {
+      "name": "taker_high_055_070_clip60",
+      "offset_start_s": 0,
+      "offset_end_s": 240,
+      "first_price_min": 0.55,
+      "first_price_max": 0.70,
+      "clip_size": 60,
+      "residual_cap_qty_candidates": [60]
+    },
+    {
+      "name": "taker_high_070_090_clip60",
+      "offset_start_s": 0,
+      "offset_end_s": 240,
+      "first_price_min": 0.70,
+      "first_price_max": 0.90,
+      "clip_size": 60,
+      "residual_cap_qty_candidates": [60]
+    },
+    {
+      "name": "taker_high_070_090_clip120",
+      "offset_start_s": 0,
+      "offset_end_s": 240,
+      "first_price_min": 0.70,
+      "first_price_max": 0.90,
+      "clip_size": 120,
+      "residual_cap_qty_candidates": [120]
+    }
+  ]
+}

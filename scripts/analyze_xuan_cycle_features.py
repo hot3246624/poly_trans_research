@@ -19,7 +19,7 @@ from typing import Any
 
 
 DEFAULT_REPLAY_DAYS = ("2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30")
-TRUSTED_START_MS = 1777275000000
+TRUSTED_START_MS = 1777274700000
 PLANNED_OUTAGE_START_MS = int(dt.datetime(2026, 4, 28, 11, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
 PLANNED_OUTAGE_END_MS = int(dt.datetime(2026, 4, 28, 12, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
 

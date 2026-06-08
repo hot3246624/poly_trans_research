@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW_ONLY_NOT_EXECUTED",
+  "strategy_owner_line": "TOP3_POLYMARKET_RESEARCH",
+  "strategy_family": "public_account_top3_to_shadow_policy",
+  "created_at_bjt": "2026-06-04",
+  "source_handoff": {
+    "path": "/Users/hot/web3Scientist/poly_trans_research/docs/research/TOP3_POLYMARKET_STRATEGY_HANDOFF_20260604_ZH.md",
+    "public_account_execution_truth": false,
+    "private_order_truth": false
+  },
+  "source_metrics": {
+    "source_type": "public_activity_profile_and_local_aggregates",
+    "primary_exports": [
+      "/Users/hot/web3Scientist/poly_trans_research/data/exports/profile_9f5f_ce25_seed_24h_20260603_1510_to_20260604_1510_bjt",
+      "/Users/hot/web3Scientist/poly_trans_research/data/exports/account_autoresearch_iter_ce25_7win_nagi_4win_20260604_hb2_bjt",
+      "/Users/hot/web3Scientist/poly_trans_research/data/exports/deep_username123123_20260527_1530_1550_bjt",
+      "/Users/hot/web3Scientist/poly_trans_research/data/exports/deep_username123123_20260527_1225_1245_bjt"
+    ],
+    "limitations": [
+      "public_activity_profile_only",
+      "single_24h_window_for_9f5f",
+      "9f5f_replay_status_low_coverage_watch_not_full_keep",
+      "username123123_expanded_window_negative_parking_refresh_not_recommended_now",
+      "no_third_party_private_maker_truth",
+      "no_order_lifecycle_truth",
+      "pair_cost_is_outcome_metric_not_entry_signal",
+      "pair_delay_is_outcome_or_execution_control_not_entry_signal"
+    ]
+  },
+  "data_contract": {
+    "replay_data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+    "allowed_manifest_layers": [
+      "backtest_cache/taker_buy_signal_core_v2_strict_l1",
+      "verification_store/completion_unwind_event_store_v2",
+      "derived/completion_candidate_pipeline_v1"
+    ],
+    "preferred_master_candidate_base": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102",
+    "excluded_labels": [
+      "20260514",
+      "20260515",
+      "20260519"
+    ],
+    "raw_replay_collector_scanned": false
+  },
+  "non_claims": {
+    "private_truth_ready": false,
+    "strategy_promotion_ready": false,
+    "live_ready": false,
+    "deployable": false,
+    "canary_authorized": false,
+    "orders_authorized": false
+  },
+  "global_controls": {
+    "no_private_key": true,
+    "no_import": true,
+    "no_order": true,
+    "no_cancel": true,
+    "no_redeem": true,
+    "no_live": true,
+    "no_deploy": true,
+    "no_funding": true,
+    "no_shared_ws_dependency": true,
+    "fee_stress_rates": [
+      0.0,
+      0.008,
+      0.025,
+      0.0283,
+      0.03
+    ],
+    "initial_acceptance_gates": {
+      "profitable_window_rate_min": 0.7,
+      "cash_pnl_min": 0.0,
+      "pair_cost_observable_max": 0.98,
+      "pair_cost_preferred_max": 0.96,
+      "resid_rate_max": 0.12,
+      "hard_resid_rate_max": 0.15,
+      "paired_action_floor_for_full_keep": 100,
+      "bad_pc_ge_100_share_p0_max": 0.25
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "9F5F_BTC_LAST60_MIDPRICE_V1",
+      "priority": "P2_MICRO_ALPHA_WATCH",
+      "role": "low_coverage_micro_alpha_watch",
+      "status": "WATCH_ONLY_DO_NOT_REFRESH_UNLESS_REPRIORITIZED",
+      "account": "0x9f5ffe76a818dce37c70f947998b52b70671a008",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "entry_branches": [
+        {
+          "branch_id": "last60_up_35_50",
+          "first_leg_side": "UP",
+          "first_leg_executable_price_min": 0.35,
+          "first_leg_executable_price_max": 0.5
+        },
+        {
+          "branch_id": "last60_down_50_65",
+          "first_leg_side": "DOWN",
+          "first_leg_executable_price_min": 0.5,
+          "first_leg_executable_price_max": 0.65
+        },
+        {
+          "branch_id": "last60_up_50_65",
+          "first_leg_side": "UP",
+          "first_leg_executable_price_min": 0.5,
+          "first_leg_executable_price_max": 0.65
+        }
+      ],
+      "entry": {
+        "time_to_close_s_max": 60,
+        "projected_pair_cost_ceiling_initial": 0.95,
+        "projected_pair_cost_ceiling_watch": 0.97
+      },
+      "execution_controls": {
+        "completion_sla_s_initial": 15,
+        "completion_sla_s_watch": 30,
+        "stop_new_entry_time_to_close_s_max": 10,
+        "target_resid_rate": 0.12,
+        "hard_resid_rate_cap": 0.15
+      },
+      "historical_support": {
+        "window_bjt": "2026-06-03T15:10:23+08:00/2026-06-04T15:10:23+08:00",
+        "account_buy_actual": 202577.636088,
+        "account_cash_pnl": 17273.017971,
+        "account_roi": 0.0853,
+        "account_avg_pair_cost_weighted": 0.947454,
+        "account_resid_rate": 0.256817,
+        "best_buckets": [
+          {
+            "bucket": "BTC/last_60s/35-50",
+            "markets": 80,
+            "buy_actual": 41476.79,
+            "cash_pnl": 4290.83,
+            "roi": 0.1035,
+            "pair_cost": 0.919,
+            "resid_rate": 0.1328
+          },
+          {
+            "bucket": "BTC/last_60s/50-65",
+            "markets": 48,
+            "buy_actual": 26119.19,
+            "cash_pnl": 2873.43,
+            "roi": 0.11,
+            "pair_cost": 0.953,
+            "resid_rate": 0.1343
+          }
+        ]
+      },
+      "local_replay_status": {
+        "source": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_nagi_shadow_policy_autoresearch_v0/top3_residual_killer_cached_iter3_20260604",
+        "best_fee_rate": 0.0283,
+        "best_classification": "KEEP_WATCH_LOW_COVERAGE",
+        "paired_action_range": "23-48",
+        "residual_qty_rate": 0.0,
+        "decision": "park_refresh; keep as micro-alpha watch only"
+      }
+    },
+    {
+      "policy_id": "CE25_BTC5M_LOW_PRICE_TAIL_DOWN_V1",
+      "priority": "P0_BASELINE",
+      "role": "stable_benchmark_alpha_candidate",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "entry": {
+        "time_to_close_s_max": 60,
+        "first_leg_side": "DOWN",
+        "first_leg_executable_price_min": 0.2,
+        "first_leg_executable_price_max": 0.35,
+        "projected_pair_cost_ceiling_initial": 0.97
+      }
+    },
+    {
+      "policy_id": "CE25_BTC5M_HIGH_PRICE_STOP_1_5M_V1",
+      "priority": "P1_BASELINE",
+      "role": "timing_risk_filter",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "entry": {
+        "time_to_close_s_min_exclusive": 60,
+        "time_to_close_s_max": 300,
+        "first_leg_executable_price_min": 0.65,
+        "first_leg_executable_price_max": 0.8,
+        "projected_pair_cost_ceiling_initial": 0.98
+      }
+    },
+    {
+      "policy_id": "USERNAME123123_SHORT_BURST_LOW_RESID_V1",
+      "priority": "PARKED",
+      "role": "historical_low_residual_burst_not_current_priority",
+      "account": "0xd950a1a89f3e61a7a9efc85a46e440ce58c15e86",
+      "status": "PARKED_EXPANDED_WINDOW_NEGATIVE_DO_NOT_REFRESH_BY_DEFAULT",
+      "required_before_replay": [
+        "explicit_reprioritization",
+        "new_independent_positive_window",
+        "cash_pnl_current_value_rebate_split"
+      ],
+      "historical_support": [
+        {
+          "window_bjt": "2026-05-27T12:00:00+08:00/2026-05-27T13:30:00+08:00",
+          "markets": 48,
+          "buy_actual": 83313.244354,
+          "pnl_metric": "cash_plus_current_plus_rebate",
+          "pnl": -6992.178394,
+          "cash_pnl": -7197.267894,
+          "resolved_roi": -0.009075,
+          "pair_cost": 0.985643,
+          "resid_rate": 0.04221,
+          "decision": "expanded_window_negative_parking_signal"
+        },
+        {
+          "window_bjt": "2026-05-27T15:30:00+08:00/2026-05-27T15:50:00+08:00",
+          "markets": 14,
+          "buy_actual": 19056.81,
+          "pnl_metric": "cash_plus_current_plus_rebate",
+          "pnl": 5360.54,
+          "roi": 0.2813,
+          "pair_cost": 0.9327,
+          "resid_rate": 0.0264
+        },
+        {
+          "window_bjt": "2026-05-27T12:25:00+08:00/2026-05-27T12:45:00+08:00",
+          "markets": 13,
+          "buy_actual": 13708.15,
+          "pnl_metric": "cash_pnl",
+          "pnl": 1133.01,
+          "roi": 0.0827,
+          "pair_cost": 0.9734,
+          "resid_rate": 0.0192
+        }
+      ]
+    }
+  ],
+  "next_artifacts": [
+    "TOP3_POLYMARKET_BOOK_SHADOW_AUTORESEARCH_REPORT",
+    "CE25_HIGH_PRICE_PAIRCAP_REPLAY_EXTENSION",
+    "9F5F_MICRO_ALPHA_WATCH_ONLY",
+    "TOP3_REPLAY_HASH_MANIFEST"
+  ]
+}

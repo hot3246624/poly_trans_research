@@ -1,0 +1,355 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW_ONLY_NOT_EXECUTED",
+  "strategy_owner_line": "CE25_HIGH_PRICE_RESEARCH",
+  "strategy_family": "ce25_high_price_strict_paircap_residual_killer",
+  "created_at_bjt": "2026-06-04",
+  "source_handoff": {
+    "path": "/Users/hot/web3Scientist/poly_trans_research/docs/research/TOP3_POLYMARKET_STRATEGY_AUTORESEARCH_20260604_ZH.md",
+    "public_account_execution_truth": false,
+    "private_order_truth": false
+  },
+  "source_metrics": {
+    "source_type": "local_book_shadow_replay_and_public_activity_profile",
+    "primary_exports": [
+      "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_nagi_shadow_policy_autoresearch_v0/top3_residual_killer_cached_iter3_20260604",
+      "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_nagi_shadow_policy_autoresearch_v0/ce25_high_price_capacity_depth_iter1_20260604",
+      "/Users/hot/web3Scientist/poly_trans_research/data/exports/account_autoresearch_iter_ce25_7win_nagi_4win_20260604_hb2_bjt"
+    ],
+    "limitations": [
+      "public_profile_and_local_replay_only",
+      "not_private_order_truth",
+      "not_live_book_truth",
+      "top1_qty_gate_l2_clean_but_local_replay_only",
+      "same_row_and_delay_buckets_are_execution_proxies",
+      "high_price_branch_may_be_risk_filter_or_generic_paircap_edge_not_alpha"
+    ]
+  },
+  "data_contract": {
+    "replay_data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+    "preferred_master_candidate_base": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102",
+    "allowed_manifest_layers": [
+      "backtest_cache/taker_buy_signal_core_v2_strict_l1",
+      "verification_store/completion_unwind_event_store_v2",
+      "derived/completion_candidate_pipeline_v1"
+    ],
+    "excluded_labels": [
+      "20260514",
+      "20260515",
+      "20260519"
+    ],
+    "raw_replay_collector_scanned": false
+  },
+  "non_claims": {
+    "private_truth_ready": false,
+    "strategy_promotion_ready": false,
+    "live_ready": false,
+    "deployable": false,
+    "canary_authorized": false,
+    "orders_authorized": false
+  },
+  "global_controls": {
+    "no_private_key": true,
+    "no_import": true,
+    "no_order": true,
+    "no_cancel": true,
+    "no_redeem": true,
+    "no_live": true,
+    "no_deploy": true,
+    "no_funding": true,
+    "no_shared_ws_dependency": true,
+    "fee_stress_rates": [
+      0.0,
+      0.008,
+      0.025,
+      0.0283,
+      0.03
+    ],
+    "initial_acceptance_gates": {
+      "cash_pnl_min": 0.0,
+      "pair_cost_observable_max": 0.98,
+      "pair_cost_preferred_max": 0.96,
+      "resid_rate_max": 0.02,
+      "hard_resid_rate_max": 0.05,
+      "paired_action_floor_for_full_keep": 100,
+      "bad_pc_ge_100_share_p0_max": 0.0
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "CE25_BTC5M_HIGH_PRICE_STOP_1_5M_V1",
+      "priority": "P0_LOCAL_L2_CLEAN_MAINLINE",
+      "role": "strict_paircap_residual_killer_template",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "entry": {
+        "time_to_close_s_min_exclusive": 60,
+        "time_to_close_s_max": 300,
+        "first_leg_executable_price_min": 0.65,
+        "first_leg_executable_price_max": 0.8,
+        "projected_pair_cost_ceiling_initial": 0.98
+      },
+      "execution_controls": {
+        "entry_requires_opposite_depth": true,
+        "entry_requires_opposite_qty_gate_variants": true,
+        "entry_requires_pair_cap_variants": true,
+        "same_row_pair_only_variant": true,
+        "target_qty_stress_buckets": [
+          1,
+          2,
+          3,
+          5,
+          8,
+          13
+        ],
+        "fill_haircut_stress_buckets": [
+          0.25,
+          0.5,
+          0.75,
+          1.0
+        ],
+        "strict_paircap_sweep": [
+          0.965,
+          0.97,
+          0.975,
+          0.98
+        ],
+        "max_pair_delay_ms_buckets": [
+          0,
+          250,
+          500,
+          1000,
+          3000
+        ],
+        "resid_rate_target": 0.0,
+        "paired_action_floor_for_full_keep": 100
+      },
+      "local_replay_support": {
+        "source": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_nagi_shadow_policy_autoresearch_v0/top3_residual_killer_cached_iter3_20260604",
+        "fee_rate": 0.0283,
+        "full_keep_branches": [
+          {
+            "branch_id": "one_to_five_min_any_65_80_same_row_pair_only",
+            "paired_actions": 214,
+            "fee_after_pnl": 22.07328,
+            "net_roi": 0.039823,
+            "residual_qty_rate": 0.0,
+            "net_pair_cost_wavg": 0.951185
+          },
+          {
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_required",
+            "paired_actions": 210,
+            "fee_after_pnl": 21.951794,
+            "net_roi": 0.040246,
+            "residual_qty_rate": 0.0,
+            "net_pair_cost_wavg": 0.950805
+          },
+          {
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_target_qty_13",
+            "fee_rate": 0.03,
+            "paired_actions": 210,
+            "fee_after_pnl": 73.752535,
+            "net_roi": 0.041055,
+            "residual_qty_rate": 0.0,
+            "net_pair_cost_wavg": 0.949482
+          },
+          {
+            "branch_id": "one_to_five_min_any_65_80_same_row_target_qty_13",
+            "fee_rate": 0.03,
+            "paired_actions": 215,
+            "fee_after_pnl": 74.226211,
+            "net_roi": 0.040535,
+            "residual_qty_rate": 0.0,
+            "net_pair_cost_wavg": 0.949956
+          }
+        ]
+      },
+      "l2_top_aligned_support": {
+        "status": "KEEP_L2_TOP_ALIGNED_ACTIONS_VALIDATED_REVIEW_REQUIRED",
+        "validator": "/Users/hot/web3Scientist/poly_trans_research/scripts/validate_ce25_high_price_l2_top_aligned_actions.py",
+        "validator_sha256": "bbfa28d570c1f6a77d53ab8a11cb8f96c8e78f46f2a59e3e94d11c144d96f7ab",
+        "report": "/Users/hot/web3Scientist/poly_trans_research/docs/research/CE25_HIGH_PRICE_L2_TOP_ALIGNED_VALIDATION_20260604_ZH.md",
+        "targeted_fee_stress": {
+          "status": "KEEP_TARGETED_FEE_STRESS_COMPUTED_REVIEW_REQUIRED",
+          "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_top1_qty_gate_fee_stress_targeted_20260604",
+          "summary_csv_sha256": "f32cc2e5fd80751a9ee45623c2d3f4aefe58be3ed8b557390df67cc40e30616a",
+          "manifest_sha256": "076ca2dfa4530ff28cd0e7e2fb3d34af84831e04158037ab0a2e55a7364a00fd",
+          "mainline_fee_0p0300_roi_est": 0.05409,
+          "mainline_fee_0p0283_roi_est": 0.054771
+        },
+        "day_stability": {
+          "status": "KEEP_DAY_STABILITY_COMPUTED_REVIEW_REQUIRED",
+          "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_top1_qty_gate_day_stability_20260604",
+          "summary_csv_sha256": "393ad2bfc8fb244521fdd08be569e7900c9c1cf5cd5dce9855e35c74e516bc42",
+          "manifest_sha256": "3c3877d9f910112d039e5fa55f0d89d45e1ead3093678349686c5d254fd583a2",
+          "active_days": 15,
+          "profitable_days": 15,
+          "weakest_day_roi_est": 0.022672,
+          "strongest_day_roi_est": 0.12677
+        },
+        "capacity_mainline_target_qty8_support": {
+          "status": "KEEP_TARGET_QTY8_FEE_DAY_SUPPORT_COMPUTED_REVIEW_REQUIRED",
+          "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_top1_qty_target_qty8_support_20260604",
+          "manifest_sha256": "37267da99522bdef05dba6c38382f18b246267c4ef9637cc5c86cc369f8a8acd",
+          "fee_stress_csv_sha256": "7186de6fad432de08d84857f3f87884e118758594abf66302d4c64563f2b4cf2",
+          "day_stability_csv_sha256": "2cf7762e3f3fbf029e324c663ebf05b213063a3001df48d03f6dcce15c404206",
+          "target_qty": 8.0,
+          "fee_0p0300_pnl_est": 41.923669,
+          "fee_0p0300_roi_est": 0.05614,
+          "fee_0p0283_pnl_est": 42.406822,
+          "fee_0p0283_roi_est": 0.056823,
+          "active_days": 15,
+          "profitable_days": 15,
+          "weakest_day": "2026-05-06",
+          "weakest_day_action_count": 9,
+          "weakest_day_market_count": 9,
+          "weakest_day_pnl_est": 1.369499,
+          "weakest_day_roi_est": 0.023505
+        },
+        "capacity_mainline_target_qty8_candidate_ledger": {
+          "status": "KEEP_CE25_TARGET_QTY8_NORMALIZED_CANDIDATE_LEDGER_REVIEW_REQUIRED_NOT_OOS_READY",
+          "output_dir": "/Users/hot/web3Scientist/poly_trans_research/data/exports/ce25_high_price_top1_qty_target_qty8_candidate_ledger_20260604",
+          "hash_manifest_sha256": "078e029de53d747edc7b02fc570867fbc803f344d725ef2daa1bb36b099e6f9c",
+          "candidate_ledger_csv_sha256": "8e8789de811081e23cac855ed1339d3546a6bd155e55af31be9aeba93c413c65",
+          "strategy_input_json_sha256": "b8553cbcea1e2fe88cb72a8993aeee7c7884b8bef9d146e33398db920eb32594",
+          "candidate_count": 134,
+          "market_count": 129,
+          "active_days": 15,
+          "buy_actual_est": 746.776329,
+          "cash_pnl_est": 41.923672,
+          "roi_est": 0.05614,
+          "top_overlay_required_count": 84,
+          "raw_l2_age_ok_pair_count": 88,
+          "l2_leg_evidence_row_count": 268,
+          "l2_leg_evidence_csv_sha256": "0c98672df350f188ab614e239a8f1e230ba190d9805bd042d8023b55028db4d9",
+          "binding_status": "REPLAY_BOUND_NOT_OOS_READY",
+          "candidate_granularity": "HISTORICAL_REPLAY_ACTION"
+        },
+        "capacity_mainline_target_qty8_source_bridge": {
+          "status": "KEEP_CE25_TARGET_QTY8_SOURCE_BRIDGE_VALIDATED_REVIEW_REQUIRED_NOT_OOS_READY",
+          "output_dir": "/Users/hot/web3Scientist/poly_trans_research/data/exports/ce25_high_price_top1_qty_target_qty8_source_bridge_20260604",
+          "hash_manifest_sha256": "a6f90926ede0455806e70a105e940a9db08317159b3d9b70988c7e12703b03fe",
+          "summary_json_sha256": "f841b7948b7b379198bbb06eab139fe13bcd14df8b13d4f2cd8eb96ff3c1048c",
+          "row_audit_csv_sha256": "ddfc98abc451f97309d7ff4f1bdef3a4b9b2be91f95b915a0be63153dfa5471d",
+          "candidate_count": 134,
+          "market_count": 129,
+          "source_action_count": 134,
+          "candidate_base_rows_loaded": 134,
+          "l2_mart_rows_loaded": 268,
+          "leg_evidence_count": 268,
+          "failed_row_count": 0,
+          "row_error_count": 0,
+          "top_overlay_required_count": 84,
+          "raw_l2_age_ok_pair_count": 88,
+          "binding_status": "REPLAY_BOUND_NOT_OOS_READY",
+          "highest_allowed_status": "KEEP_CE25_TARGET_QTY8_SOURCE_BRIDGE_VALIDATED_REVIEW_REQUIRED_NOT_OOS_READY"
+        },
+        "capacity_mainline_target_qty8_overlay_freshness_attribution": {
+          "status": "KEEP_CE25_TARGET_QTY8_OVERLAY_FRESHNESS_ATTRIBUTION_REVIEW_REQUIRED_NOT_OOS_READY",
+          "output_dir": "/Users/hot/web3Scientist/poly_trans_research/data/exports/ce25_high_price_top1_qty_target_qty8_overlay_freshness_attribution_20260604",
+          "hash_manifest_sha256": "cef55d13888387aad1a6875a7bdbf2f7f31ff9d6c553fb45d9838489dd44736b",
+          "summary_json_sha256": "7db805e16146a6ec87240c9c915506a21617892c76a4339ff3618215f2ca556f",
+          "action_audit_csv_sha256": "6a8574afcf5b76e391df67170a86254378abe2a01b9580f68c9dd06122f5912f",
+          "dependency_category_counts": {
+            "NO_OVERLAY_RAW_L2_OK": 5,
+            "OVERLAY_ONLY": 83,
+            "RAW_L2_STALE_ONLY": 45,
+            "OVERLAY_AND_RAW_L2_STALE": 1
+          },
+          "top_overlay_required_count": 84,
+          "raw_l2_age_ok_pair_count": 88,
+          "raw_l2_stale_pair_count": 46,
+          "max_raw_l2_age_ms_p50": 22.0,
+          "max_raw_l2_age_ms_p95": 10128.35,
+          "max_raw_l2_age_ms_max": 10506.0,
+          "evidence_policy_blocker": "NO_OVERLAY_AND_RAW_L2_FRESH_STRICT_SUBSET_HAS_ONLY_5_ACTIONS",
+          "highest_allowed_status": "KEEP_CE25_TARGET_QTY8_OVERLAY_FRESHNESS_ATTRIBUTION_REVIEW_REQUIRED_NOT_OOS_READY"
+        },
+        "capacity_mainline_target_qty8_evidence_policy_packet": {
+          "status": "KEEP_CE25_TARGET_QTY8_CANONICAL_L1_EVIDENCE_POLICY_ACCEPTED_REVIEW_ONLY_NOT_OOS_READY",
+          "output_dir": "/Users/hot/web3Scientist/poly_trans_research/data/exports/ce25_high_price_top1_qty_target_qty8_evidence_policy_packet_20260604",
+          "evidence_policy_id": "CANONICAL_L1_TOP1_DEPTH_ACCEPTED_FOR_LOCAL_REVIEW_ONLY_V1",
+          "decision": "ACCEPT_CANONICAL_L1_TOP1_DEPTH_FOR_LOCAL_REVIEW_ONLY",
+          "hash_manifest_sha256": "c765d86b017a45a094ca8b89f1bc52ba363218b3edbafcb7e89a09215aaf4cc2",
+          "evidence_policy_decision_sha256": "250cf6a2f4fc583aed513ff4285ff5e5fb0424c41136d8da08cc188ddcca1ab4",
+          "review_only_strategy_packet_sha256": "a680db3b47acd5735aa2bd1ebc5662611087afcfb191817ad47d229234c478e2",
+          "threshold_spec_sha256": "7f0c2f4a57f897fa93f9c12abe463aaf1e55abeecadda3184d2d12d13a5a9dd3",
+          "command_preview_sha256": "31c8ffc829801926eb8713a74490b95630929fc33702a30f1f8da7a36591f8ad",
+          "command_preview_exit_code": 66,
+          "highest_allowed_status": "KEEP_CE25_TARGET_QTY8_CANONICAL_L1_EVIDENCE_POLICY_ACCEPTED_REVIEW_ONLY_NOT_OOS_READY",
+          "not_authorized": [
+            "OOS_pass",
+            "runner_or_observer_start",
+            "private_truth_ready",
+            "strategy_promotion_ready",
+            "live_ready",
+            "deployable",
+            "canary_or_live_orders",
+            "private_key_or_candidate_import"
+          ]
+        },
+        "representative_results": [
+          {
+            "role": "capacity_mainline",
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_top1_qty_target_qty_8_cap_0.970_pxhi_0.80",
+            "fee_rate": 0.03,
+            "actions": 134,
+            "markets": 129,
+            "l2_top_aligned_vwap_pass_actions": 134,
+            "l2_top_aligned_vwap_pass_rate": 1.0,
+            "l2_top_aligned_vwap_pass_roi_est": 0.05614,
+            "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_l2_top_aligned_validation_v0/entry_paircap_top1_qty_target_qty_8_cap_0p970_pxhi_0p80_iter4_l2_v2_leg_evidence"
+          },
+          {
+            "role": "low_size_baseline",
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_top1_qty_cap_0.970_pxhi_0.80",
+            "fee_rate": 0.03,
+            "actions": 142,
+            "markets": 137,
+            "l2_top_aligned_vwap_pass_actions": 142,
+            "l2_top_aligned_vwap_pass_rate": 1.0,
+            "l2_top_aligned_vwap_pass_roi_est": 0.05409,
+            "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_l2_top_aligned_validation_v0/entry_paircap_top1_qty_cap_0p970_pxhi_0p80_iter2_l2_v2"
+          },
+          {
+            "role": "conservative_control",
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_top1_qty_cap_0.970_pxhi_0.79",
+            "fee_rate": 0.03,
+            "actions": 121,
+            "markets": 118,
+            "l2_top_aligned_vwap_pass_actions": 121,
+            "l2_top_aligned_vwap_pass_rate": 1.0,
+            "l2_top_aligned_vwap_pass_roi_est": 0.055942,
+            "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_l2_top_aligned_validation_v0/entry_paircap_top1_qty_cap_0p970_pxhi_0p79_iter2_l2_v2"
+          },
+          {
+            "role": "capacity_boundary",
+            "branch_id": "one_to_five_min_any_65_80_entry_paircap_target_qty_13",
+            "fee_rate": 0.03,
+            "actions": 210,
+            "markets": 203,
+            "l2_top_aligned_vwap_pass_actions": 186,
+            "l2_top_aligned_vwap_pass_rate": 0.885714,
+            "l2_top_aligned_vwap_pass_roi_est": 0.042733,
+            "output_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/ce25_high_price_l2_top_aligned_validation_v0/entry_paircap_target_qty_13_fee_0p0300_exact_bridge_v5_20260604"
+          }
+        ]
+      }
+    }
+  ],
+  "next_artifacts": [
+    "CE25_HIGH_PRICE_CAPACITY_DEPTH_AUTORESEARCH_REPORT",
+    "CE25_HIGH_PRICE_L2_TOP_ALIGNED_VALIDATION_REPORT",
+    "CE25_HIGH_PRICE_BRANCH_CONTROL_SUMMARY",
+    "CE25_HIGH_PRICE_DAY_STABILITY_SUMMARY",
+    "CE25_HIGH_PRICE_TARGET_QTY8_SUPPORT_SUMMARY",
+    "CE25_HIGH_PRICE_TOP1_GATE_CAPACITY_LANE",
+    "CE25_HIGH_PRICE_TOP1_GATE_TARGET_QTY8_NORMALIZED_CANDIDATE_LEDGER",
+    "CE25_HIGH_PRICE_TOP1_GATE_TARGET_QTY8_SOURCE_BRIDGE",
+    "CE25_HIGH_PRICE_TOP1_GATE_TARGET_QTY8_OVERLAY_FRESHNESS_ATTRIBUTION",
+    "CE25_HIGH_PRICE_TOP1_GATE_TARGET_QTY8_EVIDENCE_POLICY_PACKET",
+    "CE25_HIGH_PRICE_REPLAY_HASH_MANIFEST"
+  ]
+}

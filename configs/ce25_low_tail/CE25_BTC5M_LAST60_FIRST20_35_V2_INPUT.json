@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW_ONLY_NOT_EXECUTED",
+  "strategy_owner_line": "CE25_LOW_TAIL_RESEARCH",
+  "strategy_family": "public_account_bucket_to_shadow_policy",
+  "created_at_bjt": "2026-06-06",
+  "source_handoff": {
+    "path": "/Users/hot/web3Scientist/poly_trans_research/docs/research/CE25_ALPHA_DECAY_RECHECK_20260606_ZH.md",
+    "public_account_execution_truth": false,
+    "private_order_truth": false
+  },
+  "source_metrics": {
+    "profile_bucket": "BTC 5m / last_60s / first_price 20-35",
+    "latest_recheck_note": "side-neutral public profile remains strong through 2026-06-06 11:10 BJT; local replay must decide whether DOWN-only or side-neutral is reproducible",
+    "limitations": [
+      "public_activity_profile_only",
+      "no_third_party_private_maker_truth",
+      "no_order_lifecycle_truth",
+      "source_last_delta_bucket_must_be_rewritten_to_fixed_clock_last60",
+      "source_first_price_bucket_must_be_replaced_by_own_observed_executable_price"
+    ]
+  },
+  "data_contract": {
+    "replay_data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+    "preferred_master_candidate_base": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102",
+    "allowed_manifest_layers": [
+      "verification_store/completion_unwind_event_store_v2",
+      "derived/completion_candidate_pipeline_v1",
+      "derived/ce25_nagi_shadow_policy_autoresearch_v0"
+    ],
+    "excluded_labels": [
+      "20260514",
+      "20260515",
+      "20260519"
+    ],
+    "raw_replay_collector_scanned": false
+  },
+  "non_claims": {
+    "private_truth_ready": false,
+    "strategy_promotion_ready": false,
+    "live_ready": false,
+    "deployable": false,
+    "canary_authorized": false,
+    "orders_authorized": false
+  },
+  "global_controls": {
+    "no_private_key": true,
+    "no_import": true,
+    "no_order": true,
+    "no_cancel": true,
+    "no_redeem": true,
+    "no_live": true,
+    "no_deploy": true,
+    "no_funding": true,
+    "fee_stress_rates": [
+      0.0,
+      0.0283,
+      0.03
+    ],
+    "initial_acceptance_gates": {
+      "profitable_window_rate_min": 0.7,
+      "cash_pnl_min": 0.0,
+      "pair_cost_observable_max": 0.98,
+      "pair_cost_preferred_max": 0.96,
+      "resid_rate_max": 0.12,
+      "paired_action_floor_for_full_keep": 100,
+      "bad_pc_ge_100_share_p0_max": 0.25
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "CE25_BTC5M_LOW_PRICE_TAIL_SIDE_SPLIT_V2",
+      "priority": "P0",
+      "role": "low_tail_side_split_replay_candidate",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "primary_branch_id": "last60_side_split_20_35",
+      "entry": {
+        "time_to_close_s_max": 60,
+        "first_leg_side_primary": "SIDE_SPLIT_DOWN_AND_UP",
+        "first_leg_executable_price_min": 0.2,
+        "first_leg_executable_price_max": 0.35,
+        "projected_pair_cost_ceiling_initial": 0.97,
+        "projected_pair_cost_ceiling_observe": 0.98
+      },
+      "execution_controls": {
+        "completion_sla_s_aggressive": 15,
+        "completion_sla_s_conservative": 30,
+        "resid_rate_cap": 0.12,
+        "rolling_bad_pc_ge_100_share_stop": 0.25
+      },
+      "control_branches": [
+        "last60_down_10_20_neighbor",
+        "last60_up_10_20_neighbor"
+      ],
+      "historical_support": {
+        "public_profile_bucket": "BTC 5m / last_60s / first_price 20-35",
+        "note": "Use runner output from this input to decide whether side-neutral should replace DOWN-only."
+      }
+    }
+  ],
+  "rejected_patterns": [
+    {
+      "id": "copy_ce25_full_account",
+      "reason": "full account recent broad last60 has degraded and cannot be copied"
+    },
+    {
+      "id": "use_public_profile_outcome_fields_as_entry",
+      "reason": "last_delta and first_price labels must become fixed-clock public-book observations"
+    }
+  ]
+}

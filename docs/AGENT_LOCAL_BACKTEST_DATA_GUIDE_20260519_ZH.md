@@ -8,6 +8,40 @@ export POLY_BT_ROOT=/Users/hot/web3Scientist/poly_backtest_data
 
 只认 manifest 已发布的数据。不要扫 collector、raw、replay SQLite；不要把目录存在当成可用信号。
 
+## 2026-05-27 多币种 V1 本地化更新
+
+常规回测、gate、catalog 查询默认只使用 MacBook 本地根目录：
+
+```text
+/Users/hot/web3Scientist/poly_backtest_data
+```
+
+`/Volumes/PolyData` 只作为冷归档、重建、raw/replay 元数据极端复核的 staging 盘；正常多币种 backtest V1 不应要求外盘挂载。
+
+已本地化的 V1 compact artifacts：
+
+```text
+$POLY_BT_ROOT/derived/multiasset_l1_flow_event_store_v1/20260502_20260518_minsz10
+$POLY_BT_ROOT/derived/multiasset_l1_flow_bucket_mart_v1
+$POLY_BT_ROOT/derived/multiasset_market_cycle_feature_mart_v1
+$POLY_BT_ROOT/derived/contract_examples/backtest_experiment_suite_deep_v1
+$POLY_BT_ROOT/derived/contract_examples/backtest_candidate_audit_pack_latest
+$POLY_BT_ROOT/derived/contract_examples/backtest_readiness_deep_with_experiment_v1
+$POLY_BT_ROOT/verification_store/replay_store_multiasset_core_v1/20260502_20260518_core
+```
+
+当前 V1 search-safe event store 覆盖 `BNB, BTC, DOGE, ETH, HYPE, SOL, XRP`，有效日仍是 `2026-05-02..13, 2026-05-16, 2026-05-17, 2026-05-18`，禁止日仍是 `2026-05-14/15/19`。search-safe 层不得包含 winner、settlement、outcome、private truth、residual 等列。
+
+xuan 侧只读接入 gate 默认读取本地 V1 artifacts：
+
+```bash
+cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
+uv run python scripts/xuan_shadow_review_backtest_v1_integration_gate.py
+uv run --with duckdb python scripts/xuan_shadow_review_backtest_v1_integration_gate.py
+```
+
+第一条命令使用 CSV fallback，不要求环境预装 DuckDB；第二条命令验证 DuckDB audit pack。两者都只判断 V1 作为 upstream search-safe screening layer 是否可用，不授权 remote run、candidate import、deploy 或 live order。
+
 ## 当前可用范围
 
 有效完整日：
@@ -190,7 +224,7 @@ candidate_base:
 $POLY_BT_ROOT/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102
 
 state_machine:
-$POLY_BT_ROOT/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_e055_t5_imb125_rc30_050_20260502_20260518
+$POLY_BT_ROOT/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2
 ```
 
 核心 manifest：
@@ -201,6 +235,9 @@ RESULT_SUMMARY_MANIFEST.json
 CANDIDATE_REGISTRY_MANIFEST.json
 COMPLIANCE_MANIFEST.json
 ```
+
+`state_machine_results.duckdb` 使用显式 schema 写入，`candidate_registry.side/opposite_side/winner_side`
+保持 `VARCHAR` 的 `YES/NO` 标签，不依赖 CSV 自动类型推断。
 
 当前 residual-cooldown 配置：
 
@@ -215,6 +252,10 @@ cooldown_s=5
 imbalance_qty_cap=1.25
 residual_cooldown_age_s=30
 residual_cooldown_cost_cap=0.5
+fee_model=official_taker
+official_fee_formula=shares * fee_rate * price * (1 - price)
+official_fee_rate=0.07  # BTC/crypto fee rate used explicitly for this local run; fetch current per-market fee details before live use
+official_fee_source=https://docs.polymarket.com/trading/fees
 ```
 
 当前结果：
@@ -227,8 +268,12 @@ candidate_registry_rows=51,618
 pair_actions=27,358
 pair_qty=30,426.4325
 net_pair_cost_wavg=0.887251
-net_pnl=+3,618.707937
+gross_pnl=+3,618.707937
+official_taker_fee=946.907010
+fee_after_pnl=+2,671.800927
+net_pnl=+2,671.800927
 stress100_worst_pnl=+1,538.959062
+worst_day_fee_after_pnl=+146.462785
 qty_residual_rate=5.0178%
 ```
 
@@ -240,8 +285,9 @@ strict_cache_covered_days=2026-05-02..13,2026-05-16,2026-05-17,2026-05-18
 strict_cache_validation_error_count=0 for all labels
 
 public_account_execution_truth_v1_present=true
-public_account_audit_covered_days=2026-05-02..13
-public_account_audit_missing_days=2026-05-16,2026-05-17,2026-05-18
+public_account_audit_covered_days=2026-05-02..13,2026-05-16,2026-05-17,2026-05-18
+public_account_audit_missing_days=[]
+public_account_audit_labels=20260502_20260513,20260516_20260518
 public_account_audit_is_private_truth=false
 promotion_gate_pass=false
 ```
@@ -249,7 +295,7 @@ promotion_gate_pass=false
 读取示例：
 
 ```bash
-export OUT="$POLY_BT_ROOT/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_e055_t5_imb125_rc30_050_20260502_20260518"
+export OUT="$POLY_BT_ROOT/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2"
 
 uv run --with duckdb python - <<'PY'
 import duckdb, os
@@ -262,7 +308,7 @@ print(con.execute("""
   order by 1,2
 """).fetchall())
 print(con.execute("""
-  select day, seed_actions, pair_actions, net_pnl, stress100_worst_pnl
+  select day, seed_actions, pair_actions, actual_settle_pnl, official_taker_fee, fee_after_pnl, stress100_worst_pnl
   from summary_by_day
   order by day
 """).fetchall())
@@ -277,6 +323,7 @@ PY
 
 ```text
 $POLY_BT_ROOT/verification_store/public_account_execution_truth_v1/20260502_20260513/event_store.duckdb
+$POLY_BT_ROOT/verification_store/public_account_execution_truth_v1/20260516_20260518/event_store.duckdb
 ```
 
 只能作为 B27/RWO public proxy truth。不要写成私有账户真相。

@@ -348,11 +348,12 @@ python cfdata.py audit-startup --day <UTC-YYYY-MM-DD> \
 
 - `replay_published/YYYY-MM-DD/crypto_5m.sqlite`：source of truth，用于构建 cache/store 和最终少量候选验证。
 - `backtest_cache/taker_buy_signal_core_v2_strict_l1/<label>`：严格 L1 对齐后的 taker-buy 搜索 cache，供并发参数搜索读取。
-- `verification_store/completion_unwind_event_store_v1/<label>`：completion / unwind / inventory 事件层，供 maker/inventory 相关研究读取。
+- `verification_store/completion_unwind_event_store_v2/<label>`：completion / unwind / inventory 事件层，供 maker/inventory 相关研究读取。
 
 使用原则：
 
 - 搜索和 ranking 优先读 cache/store。
+- 回测报告必须先声明实际读取的 labels、days、market prefix/assets、row_count 和是否包含 public account truth；不要把 `/tmp` 本地局部副本当成全量数据集。
 - 其他 agent 不直接扫 `raw`、不反复全量扫 SQLite replay。
 - 最终入选策略必须回到 replay/source-of-truth 做验证；cache 只负责快速筛选，不替代最终验证。
 - 新增一天数据的顺序应是：当天 replay publish 完成后，先构建 strict V2 cache 和 completion unwind event store，再进入下一天重任务。
@@ -424,5 +425,5 @@ uv run python legacy/tools/analyze_trade.py "https://polymarket.com/event/..." -
 
 - 单市场、单账户人工诊断：用 `legacy/tools/analyze_trade.py`。
 - 多 agent 参数搜索：用 `backtest_cache/taker_buy_signal_core_v2_strict_l1/<label>`。
-- maker / inventory / completion-unwind 搜索：用 `verification_store/completion_unwind_event_store_v1/<label>`。
+- maker / inventory / completion-unwind 搜索：用 `verification_store/completion_unwind_event_store_v2/<label>`。
 - 最终候选确认：用 replay/source-of-truth 验证队列，不能只凭账户分析或 cache 搜索结果部署。

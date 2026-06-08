@@ -4,11 +4,14 @@
 
 ## 当前结论
 
-可用于常规研究的完整日期截至：
+可用于常规研究的完整日期以 manifest 自动发现为准。当前 collector 已验证的有效日期包含：
 
 ```text
 2026-05-02..2026-05-13
+2026-05-16..2026-05-17
 ```
+
+`2026-05-18` 仍按热采集日处理；只有 replay publish、strict V2 cache 和 completion unwind event store 都发布后，才纳入常规研究。
 
 禁止自动使用的日期：
 
@@ -18,6 +21,91 @@
 ```
 
 原因：这两天 public market_ws L1/L2 capture 曾降级，不能作为完整日回测样本。不要因为看到 raw/replay 目录就使用这两天。只有在人为声明“做故障取证/局部区间分析”时才可以单独读取。
+
+## 先判定数据集范围
+
+任何 agent 在报告“回测结果”前，必须先报告自己实际使用的数据范围。不要把本地 `/tmp` 副本、部分 label、单资产研究集，当成 collector 上的完整回测数据。
+
+报告里至少写清：
+
+```text
+data_root: 实际读取的根目录
+dataset_type: strict_v2_cache / completion_unwind_event_store_v2 / public_account_execution_truth_v1 / replay_audit
+labels: 实际读取的 label 列表
+days: 实际覆盖的 day 列表
+assets_or_market_prefix: 例如 btc-updown-5m；如果没验证多资产，就写 BTC-only
+row_count: 实际读取行数
+blocked_days_excluded: 是否确认排除了 20260514/20260515
+public_account_truth_available: 是否读取了 public_account_execution_truth_v1
+```
+
+典型局部副本示例：
+
+```text
+/tmp/xuan_frontier_data/completion_unwind_event_store_v2/20260509..13
+```
+
+如果一个 agent 只看到这类本地副本，并且查询结果显示只有 BTC、只覆盖 2026-05-09..2026-05-13，那么它只能得出：
+
+```text
+BTC strict-V2 completion/unwind 研究结论，覆盖 2026-05-09..2026-05-13。
+```
+
+不能得出：
+
+```text
+完整 2026-05-02..2026-05-13 结论
+多资产结论
+B27/RWO/xuan public account truth 结论
+可直接部署结论
+```
+
+`completion_unwind_event_store_v2` 里的 `side_bid_level_drop_qty`、`side_ask_level_lift_qty`、L2 VWAP/clip 字段是研究特征。它们可以用来评估 depth/depletion 逻辑，但如果 live/shadow 的 `BookTick` 没有同等字段，就不能直接证明 live 可执行；需要补 live 特征或做不依赖这些字段的 ablation。
+
+同一个 `ts_ms` / market / side 下可能有多个事件。verifier 和策略搜索必须使用稳定 tie-breaker，不要假设 `(day, condition_id, side, ts_ms)` 唯一。建议排序键：
+
+```sql
+ORDER BY
+  day,
+  condition_id,
+  ts_ms,
+  strict_l1_recv_ms NULLS LAST,
+  strict_l1_row_id NULLS LAST,
+  strict_l2_recv_ms NULLS LAST,
+  strict_l2_row_id NULLS LAST,
+  event_kind,
+  side,
+  public_trade_row_id NULLS LAST,
+  event_id
+```
+
+快速检查本地 event store 覆盖：
+
+```bash
+export STORE=/tmp/xuan_frontier_data/completion_unwind_event_store_v2/20260509/event_store.duckdb
+
+uv run --with duckdb python - <<'PY'
+import duckdb, os
+store = os.environ["STORE"]
+con = duckdb.connect(store, read_only=True)
+print(con.execute("""
+  select
+    min(day) as min_day,
+    max(day) as max_day,
+    count(distinct day) as days,
+    count(distinct slug) as markets,
+    count(*) as rows,
+    sum(case when slug like 'btc-updown-5m-%' then 1 else 0 end) as btc_rows
+  from completion_unwind_events
+""").fetchall())
+print(con.execute("""
+  select day, count(distinct slug) as markets, count(*) as rows
+  from completion_unwind_events
+  group by 1
+  order by 1
+""").fetchall())
+PY
+```
 
 ## Collector 和挂载
 
@@ -86,6 +174,8 @@ label 不包含 20260514 或 20260515
 20260511
 20260512
 20260513
+20260516
+20260517
 ```
 
 发现命令：
@@ -121,6 +211,8 @@ label 不包含 20260514 或 20260515
 20260511
 20260512
 20260513
+20260516
+20260517
 ```
 
 发现命令：
@@ -372,4 +464,4 @@ B27/RWO audit 用：
 /mnt/poly-verification-store/public_account_execution_truth_v1/20260502_20260513
 ```
 
-只使用 2026-05-02..2026-05-13；不要使用 2026-05-14/15；不要宽扫 replay/raw。
+只使用 manifest 已发布且不在 blocklist 的有效 label；当前包括 2026-05-02..2026-05-13、2026-05-16..2026-05-17。不要使用 2026-05-14/15；不要宽扫 replay/raw。

@@ -1,0 +1,124 @@
+{
+  "schema": "xuan_completion_controller_shadow_v1",
+  "status": "research_shadow_only",
+  "source_report": "docs/research/XUAN_2026_05_02_L2_EXECUTION_FINDINGS_ZH.md",
+  "data_window": {
+    "replay_root": "/Users/hot/web3Scientist/poly_trans_research/data/replay",
+    "trusted_start": "2026-04-27T07:25:00Z",
+    "days": [
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ]
+  },
+  "controller_modes": [
+    {
+      "name": "risk_control_shadow",
+      "intent": "match_xuan_30s_completion_rate",
+      "stages": [
+        {
+          "deadline_s": 2,
+          "pair_cost_ceiling": 0.95,
+          "purpose": "capture immediate profit fill"
+        },
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 1.01,
+          "purpose": "near-parity risk repair"
+        }
+      ],
+      "evidence": {
+        "five_day_close_rate": 0.827556,
+        "xuan_observed_30s_rate": 0.820798,
+        "counterfactual_pair_p50": 1.004139,
+        "counterfactual_surplus_usdc": 1925.96
+      }
+    },
+    {
+      "name": "balanced_shadow",
+      "intent": "preserve_more_profit_at_lower_completion_rate",
+      "stages": [
+        {
+          "deadline_s": 2,
+          "pair_cost_ceiling": 0.95,
+          "purpose": "capture immediate profit fill"
+        },
+        {
+          "deadline_s": 30,
+          "pair_cost_ceiling": 1.005,
+          "purpose": "tighter near-parity risk repair"
+        }
+      ],
+      "evidence": {
+        "five_day_close_rate": 0.787225,
+        "xuan_observed_30s_rate": 0.820798,
+        "counterfactual_pair_p50": 1.0,
+        "counterfactual_surplus_usdc": 3491.46
+      }
+    }
+  ],
+  "state_dependent_completion_budget_hint": {
+    "first_price_buckets": [
+      {
+        "bucket": "<0.40",
+        "suggested_ceiling": null,
+        "reason": "not explained by L2 up to 1.02; needs separate execution/depth investigation"
+      },
+      {
+        "bucket": "0.40-0.55",
+        "suggested_ceiling": 1.01
+      },
+      {
+        "bucket": "0.55-0.70",
+        "suggested_ceiling": 1.0075
+      },
+      {
+        "bucket": ">=0.70",
+        "suggested_ceiling": 1.0025
+      }
+    ],
+    "offset_buckets": [
+      {
+        "bucket": "000-030s",
+        "suggested_ceiling": 1.02,
+        "reason": "early rounds need wider budget to match observed completion"
+      },
+      {
+        "bucket": "030-120s",
+        "suggested_ceiling": 1.0075
+      },
+      {
+        "bucket": "120-240s",
+        "suggested_ceiling": 1.0025
+      },
+      {
+        "bucket": "240-300s",
+        "suggested_ceiling": null,
+        "reason": "tail behavior not fully explained by L2 ceiling"
+      }
+    ]
+  },
+  "slow_profit_path_gate": {
+    "name": "cheap_window_evidence_30s",
+    "allow_slow_path_if": {
+      "min_pair_cost_seen_in_first_30s_lte": 0.95
+    },
+    "block_slow_path_if": {
+      "min_pair_cost_seen_in_first_30s_gt": 0.95
+    },
+    "evidence": {
+      "eligible_slow_profit_rate_among_slow": 0.793548,
+      "eligible_surplus_usdc": 8340.53,
+      "blocked_slow_profit_rate_among_slow": 0.352941,
+      "blocked_surplus_usdc": 279.2
+    }
+  },
+  "hard_warnings": [
+    "Do not enforce live from this config; it is shadow research only.",
+    "Do not use xuan Data API timestamp for L2 alignment when exact public trade timestamp is available.",
+    "Do not implement profit-first wait longer than a few seconds before risk repair; 15s wait materially under-closes versus xuan.",
+    "Pure near-parity repair matches completion but loses money without profit/slow-path surplus."
+  ]
+}

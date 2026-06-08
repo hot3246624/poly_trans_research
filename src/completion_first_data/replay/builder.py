@@ -396,14 +396,20 @@ class ReplayBuilder:
                     cur.execute(
                         """
                         INSERT OR REPLACE INTO settlement_records
-                        (condition_id, official_outcome, settle_ms, resolution_source, capture_seq)
-                        VALUES (?, ?, ?, ?, ?)
+                        (
+                            condition_id, official_outcome, winner_side, winner_token_id,
+                            settle_ms, resolution_source, raw_json, capture_seq
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["condition_id"],
                             rec["official_outcome"],
+                            rec["winner_side"],
+                            rec["winner_token_id"],
                             rec["settle_ms"],
                             rec["resolution_source"],
+                            rec["raw_json"],
                             rec["capture_seq"],
                         ),
                     )
@@ -666,10 +672,10 @@ class ReplayBuilder:
                         """
                         INSERT INTO xuan_trades (
                             user, poll_ts_ms, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
-                            condition_id, slug, event_slug, title, outcome, side,
+                            condition_id, slug, event_slug, title, outcome, outcome_side, side,
                             price, size, asset, proxy_wallet, tx_hash, trade_id,
                             source_quality, raw_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["user"],
@@ -683,6 +689,7 @@ class ReplayBuilder:
                             rec["event_slug"],
                             rec["title"],
                             rec["outcome"],
+                            rec["outcome_side"],
                             rec["side"],
                             rec["price"],
                             rec["size"],
@@ -715,10 +722,10 @@ class ReplayBuilder:
                         """
                         INSERT INTO xuan_activity (
                             user, poll_ts_ms, activity_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
-                            condition_id, slug, event_slug, title, activity_type, outcome, side,
+                            condition_id, slug, event_slug, title, activity_type, outcome, outcome_side, side,
                             price, size, usdc_size, asset, proxy_wallet, tx_hash,
                             source_quality, raw_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rec["user"],
@@ -733,6 +740,7 @@ class ReplayBuilder:
                             rec["title"],
                             rec["activity_type"],
                             rec["outcome"],
+                            rec["outcome_side"],
                             rec["side"],
                             rec["price"],
                             rec["size"],

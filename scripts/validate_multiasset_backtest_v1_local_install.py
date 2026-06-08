@@ -71,11 +71,16 @@ EXPECTED_RUNNERS = (
     "scripts/build_btc_rescue_adjusted_capital_ledger.py",
     "scripts/build_btc_merge_turnover_report.py",
     "scripts/build_btc_source_semantics_delta_report.py",
+    "scripts/build_btc_parity_semantic_alignment_experiment.py",
+    "scripts/build_btc_v1_old_baseline_overlap_decomposition.py",
+    "scripts/build_btc_same_window_canary_preflight.py",
+    "scripts/evaluate_xuan_btc_tiny_canary_no_order_shadow.py",
     "scripts/build_multiasset_strict_rescue_opportunity_report.py",
     "scripts/build_multiasset_merge_turnover_report.py",
     "scripts/build_multiasset_backtest_coverage_scorecard.py",
     "scripts/build_xuan_completion_candidate_rescore.py",
     "scripts/build_xuan_capital_ledger_report.py",
+    "scripts/build_xuan_same_window_shadow_start_preflight.py",
     "scripts/build_xuan_backtest_v1_strategy_readiness_gate.py",
     "scripts/repair_replay_store_duckdb_view_paths.py",
     "scripts/validate_l1_from_l2_parity.py",
@@ -451,6 +456,14 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         / "contract_examples/btc_merge_turnover_latest/BTC_MERGE_TURNOVER_REPORT.json",
         "btc_source_semantics_delta": derived
         / "contract_examples/btc_source_semantics_delta_latest/BTC_SOURCE_SEMANTICS_DELTA_REPORT.json",
+        "btc_parity_semantic_alignment": derived
+        / "contract_examples/btc_parity_semantic_alignment_latest/BTC_PARITY_SEMANTIC_ALIGNMENT_EXPERIMENT.json",
+        "btc_v1_old_baseline_overlap_decomposition": derived
+        / "contract_examples/btc_v1_old_baseline_overlap_decomposition_latest/BTC_V1_OLD_BASELINE_OVERLAP_DECOMPOSITION_REPORT.json",
+        "btc_tiny_canary_preflight": derived
+        / "contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/manifest.json",
+        "btc_tiny_canary_no_order_shadow_eval": derived
+        / "contract_examples/xuan_btc_tiny_canary_no_order_shadow_eval_latest/XUAN_BTC_TINY_CANARY_NO_ORDER_SHADOW_EVAL.json",
         "multiasset_strict_rescue_opportunity": derived
         / "contract_examples/multiasset_strict_rescue_opportunity_latest/MULTIASSET_STRICT_RESCUE_OPPORTUNITY_REPORT.json",
         "multiasset_merge_turnover": derived
@@ -461,6 +474,16 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         / "contract_examples/xuan_completion_candidate_rescore_latest/XUAN_COMPLETION_CANDIDATE_RESCORE_MANIFEST.json",
         "xuan_capital_ledger": derived
         / "contract_examples/xuan_capital_ledger_latest/XUAN_CAPITAL_LEDGER_REPORT.json",
+        "xuan_same_window_handoff_tiered_scorecard": derived
+        / "contract_examples/xuan_same_window_handoff_tiered_scorecard_latest/XUAN_SAME_WINDOW_HANDOFF_TIERED_SCORECARD_MANIFEST.json",
+        "xuan_same_window_shadow_design_packet": derived
+        / "contract_examples/xuan_same_window_shadow_design_packet_latest/XUAN_SAME_WINDOW_SHADOW_DESIGN_PACKET_MANIFEST.json",
+        "xuan_same_window_shadow_readiness_gate": derived
+        / "contract_examples/xuan_same_window_shadow_readiness_gate_latest/XUAN_SAME_WINDOW_SHADOW_READINESS_GATE.json",
+        "xuan_same_window_shadow_start_preflight": derived
+        / "contract_examples/xuan_same_window_shadow_start_preflight_spec_latest/XUAN_SAME_WINDOW_SHADOW_START_PREFLIGHT_SPEC.json",
+        "xuan_same_window_no_order_shadow_start_preflight": derived
+        / "contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/XUAN_SAME_WINDOW_NO_ORDER_SHADOW_START_PREFLIGHT.json",
         "xuan_strategy_readiness_gate": derived
         / "contract_examples/xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json",
         "l2_validation_plan": derived
@@ -593,6 +616,22 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         "btc_source_semantics_delta": check_optional_report(
             paths["btc_source_semantics_delta"], issues, "btc_source_semantics_delta_report_v1"
         ),
+        "btc_parity_semantic_alignment": check_optional_report(
+            paths["btc_parity_semantic_alignment"], issues, "btc_parity_semantic_alignment_experiment_v1"
+        ),
+        "btc_v1_old_baseline_overlap_decomposition": check_optional_report(
+            paths["btc_v1_old_baseline_overlap_decomposition"],
+            issues,
+            "btc_v1_old_baseline_overlap_decomposition_report_v1",
+        ),
+        "btc_tiny_canary_preflight": check_optional_report(
+            paths["btc_tiny_canary_preflight"], issues, "btc_same_window_tiny_canary_preflight_packet_v1"
+        ),
+        "btc_tiny_canary_no_order_shadow_eval": check_optional_report(
+            paths["btc_tiny_canary_no_order_shadow_eval"],
+            issues,
+            "xuan_btc_tiny_canary_no_order_shadow_eval_v1",
+        ),
         "multiasset_strict_rescue_opportunity": check_optional_report(
             paths["multiasset_strict_rescue_opportunity"], issues, "multiasset_strict_rescue_opportunity_report_v1"
         ),
@@ -607,6 +646,31 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         ),
         "xuan_capital_ledger": check_optional_report(
             paths["xuan_capital_ledger"], issues, "xuan_capital_ledger_report_v1"
+        ),
+        "xuan_same_window_handoff_tiered_scorecard": check_optional_report(
+            paths["xuan_same_window_handoff_tiered_scorecard"],
+            issues,
+            "xuan_same_window_handoff_tiered_scorecard_local_v1",
+        ),
+        "xuan_same_window_shadow_design_packet": check_optional_report(
+            paths["xuan_same_window_shadow_design_packet"],
+            issues,
+            "xuan_same_window_shadow_design_packet_local_v1",
+        ),
+        "xuan_same_window_shadow_readiness_gate": check_optional_report(
+            paths["xuan_same_window_shadow_readiness_gate"],
+            issues,
+            "xuan_same_window_shadow_readiness_gate_local_v1",
+        ),
+        "xuan_same_window_shadow_start_preflight": check_optional_report(
+            paths["xuan_same_window_shadow_start_preflight"],
+            issues,
+            "xuan_same_window_shadow_start_preflight_spec_local_v1",
+        ),
+        "xuan_same_window_no_order_shadow_start_preflight": check_optional_report(
+            paths["xuan_same_window_no_order_shadow_start_preflight"],
+            issues,
+            "xuan_same_window_no_order_shadow_start_preflight_v1",
         ),
         "xuan_strategy_readiness_gate": check_optional_report(
             paths["xuan_strategy_readiness_gate"], issues, "xuan_backtest_v1_strategy_readiness_gate_v1"
@@ -628,6 +692,123 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
         ),
     }
     audit_with_l2 = read_json(paths["audit_with_l2_manifest"]) if paths["audit_with_l2_manifest"].exists() else {}
+    xuan_rescore_manifest = (
+        read_json(paths["xuan_completion_candidate_rescore"])
+        if paths["xuan_completion_candidate_rescore"].exists()
+        else {}
+    )
+    xuan_rescore_handoff = xuan_rescore_manifest.get("same_window_handoff") or {}
+    btc_tiny_canary_manifest = (
+        read_json(paths["btc_tiny_canary_preflight"]) if paths["btc_tiny_canary_preflight"].exists() else {}
+    )
+    btc_tiny_canary_shadow_eval_manifest = (
+        read_json(paths["btc_tiny_canary_no_order_shadow_eval"])
+        if paths["btc_tiny_canary_no_order_shadow_eval"].exists()
+        else {}
+    )
+    btc_overlap_decomposition_manifest = (
+        read_json(paths["btc_v1_old_baseline_overlap_decomposition"])
+        if paths["btc_v1_old_baseline_overlap_decomposition"].exists()
+        else {}
+    )
+    no_order_shadow_start_preflight_manifest = (
+        read_json(paths["xuan_same_window_no_order_shadow_start_preflight"])
+        if paths["xuan_same_window_no_order_shadow_start_preflight"].exists()
+        else {}
+    )
+    if btc_tiny_canary_manifest:
+        if not btc_tiny_canary_manifest.get("canary_preflight_ready"):
+            issue(issues, "fail", paths["btc_tiny_canary_preflight"], "BTC tiny canary preflight is not ready")
+        for blocked_key in (
+            "tiny_canary_start_ready",
+            "live_ready",
+            "private_truth_ready",
+            "import_enabled",
+            "candidate_import_allowed",
+        ):
+            if btc_tiny_canary_manifest.get(blocked_key):
+                issue(issues, "fail", paths["btc_tiny_canary_preflight"], f"{blocked_key} must remain false")
+    if btc_tiny_canary_shadow_eval_manifest:
+        shadow_eval_policy = btc_tiny_canary_shadow_eval_manifest.get("policy") or {}
+        shadow_eval_promotion_gate = btc_tiny_canary_shadow_eval_manifest.get("promotion_gate") or {}
+        for blocked_key in (
+            "orders_allowed",
+            "live_orders_allowed",
+            "candidate_import_allowed",
+            "private_truth_ready",
+            "strategy_promotion_ready",
+            "deployable",
+        ):
+            if shadow_eval_policy.get(blocked_key):
+                issue(
+                    issues,
+                    "fail",
+                    paths["btc_tiny_canary_no_order_shadow_eval"],
+                    f"shadow eval policy.{blocked_key} must remain false",
+                )
+        for blocked_key in ("private_truth_ready", "strategy_promotion_ready", "live_ready", "live_orders_allowed"):
+            if shadow_eval_promotion_gate.get(blocked_key):
+                issue(
+                    issues,
+                    "fail",
+                    paths["btc_tiny_canary_no_order_shadow_eval"],
+                    f"shadow eval promotion_gate.{blocked_key} must remain false",
+                )
+    if btc_overlap_decomposition_manifest:
+        bucket_names = {
+            row.get("decomposition_bucket") for row in btc_overlap_decomposition_manifest.get("buckets") or []
+        }
+        required_buckets = {"old_baseline_overlap", "v1_normalized_new_only", "v1_normalized_all"}
+        missing_buckets = sorted(required_buckets - bucket_names)
+        if missing_buckets:
+            issue(
+                issues,
+                "fail",
+                paths["btc_v1_old_baseline_overlap_decomposition"],
+                f"BTC V1 overlap decomposition missing buckets: {missing_buckets}",
+            )
+        promotion_gate = ((btc_overlap_decomposition_manifest.get("policy") or {}).get("promotion_gate") or {})
+        for blocked_key in ("private_truth_ready", "strategy_promotion_ready", "deployable", "live_orders_allowed"):
+            if promotion_gate.get(blocked_key):
+                issue(
+                    issues,
+                    "fail",
+                    paths["btc_v1_old_baseline_overlap_decomposition"],
+                    f"overlap decomposition promotion_gate.{blocked_key} must remain false",
+                )
+    if no_order_shadow_start_preflight_manifest:
+        if not no_order_shadow_start_preflight_manifest.get("engineering_preflight_ready"):
+            issue(
+                issues,
+                "fail",
+                paths["xuan_same_window_no_order_shadow_start_preflight"],
+                "no-order shadow engineering preflight is not ready",
+            )
+        if no_order_shadow_start_preflight_manifest.get("shadow_start_ready"):
+            issue(
+                issues,
+                "fail",
+                paths["xuan_same_window_no_order_shadow_start_preflight"],
+                "shadow_start_ready must remain false until explicit user approval",
+            )
+        runner_config = no_order_shadow_start_preflight_manifest.get("runner_config") or {}
+        for blocked_key in ("orders_allowed", "live_orders_allowed", "candidate_import_allowed"):
+            if runner_config.get(blocked_key):
+                issue(
+                    issues,
+                    "fail",
+                    paths["xuan_same_window_no_order_shadow_start_preflight"],
+                    f"runner_config.{blocked_key} must remain false",
+                )
+        policy = no_order_shadow_start_preflight_manifest.get("policy") or {}
+        for blocked_key in ("private_truth_ready", "strategy_promotion_ready", "deployable", "live_orders_allowed"):
+            if policy.get(blocked_key):
+                issue(
+                    issues,
+                    "fail",
+                    paths["xuan_same_window_no_order_shadow_start_preflight"],
+                    f"policy.{blocked_key} must remain false",
+                )
     published_json_paths = [
         paths[name]
         for name in (
@@ -652,11 +833,20 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_rescue_adjusted_capital_ledger",
             "btc_merge_turnover",
             "btc_source_semantics_delta",
+            "btc_parity_semantic_alignment",
+            "btc_v1_old_baseline_overlap_decomposition",
+            "btc_tiny_canary_preflight",
+            "btc_tiny_canary_no_order_shadow_eval",
             "multiasset_strict_rescue_opportunity",
             "multiasset_merge_turnover",
             "multiasset_coverage_scorecard",
             "xuan_completion_candidate_rescore",
             "xuan_capital_ledger",
+            "xuan_same_window_handoff_tiered_scorecard",
+            "xuan_same_window_shadow_design_packet",
+            "xuan_same_window_shadow_readiness_gate",
+            "xuan_same_window_shadow_start_preflight",
+            "xuan_same_window_no_order_shadow_start_preflight",
             "xuan_strategy_readiness_gate",
             "l2_validation_plan",
             "l1_from_l2_parity",
@@ -733,11 +923,48 @@ def build_report(data_root: Path, strict_duckdb: bool) -> dict[str, Any]:
             "btc_rescue_adjusted_capital_ledger_status": reports["btc_rescue_adjusted_capital_ledger"].get("status"),
             "btc_merge_turnover_status": reports["btc_merge_turnover"].get("status"),
             "btc_source_semantics_delta_status": reports["btc_source_semantics_delta"].get("status"),
+            "btc_parity_semantic_alignment_status": reports["btc_parity_semantic_alignment"].get("status"),
+            "btc_v1_old_baseline_overlap_decomposition_status": reports[
+                "btc_v1_old_baseline_overlap_decomposition"
+            ].get("status"),
+            "btc_tiny_canary_preflight_status": reports["btc_tiny_canary_preflight"].get("status"),
+            "btc_tiny_canary_preflight_ready": btc_tiny_canary_manifest.get("canary_preflight_ready"),
+            "btc_tiny_canary_start_ready": btc_tiny_canary_manifest.get("tiny_canary_start_ready"),
+            "btc_tiny_canary_no_order_shadow_eval_status": reports["btc_tiny_canary_no_order_shadow_eval"].get(
+                "status"
+            ),
+            "btc_tiny_canary_no_order_shadow_eval_passed": (
+                (btc_tiny_canary_shadow_eval_manifest.get("summary") or {}).get("evaluation_passed")
+            ),
             "multiasset_strict_rescue_opportunity_status": reports["multiasset_strict_rescue_opportunity"].get("status"),
             "multiasset_merge_turnover_status": reports["multiasset_merge_turnover"].get("status"),
             "multiasset_coverage_scorecard_status": reports["multiasset_coverage_scorecard"].get("status"),
             "xuan_completion_candidate_rescore_status": reports["xuan_completion_candidate_rescore"].get("status"),
+            "xuan_same_window_handoff_market_count": xuan_rescore_handoff.get("handoff_market_count"),
+            "xuan_same_window_handoff_action_rows": xuan_rescore_handoff.get("handoff_action_rows"),
+            "xuan_same_window_handoff_residual_lot_rows": xuan_rescore_handoff.get("handoff_residual_lot_rows"),
             "xuan_capital_ledger_status": reports["xuan_capital_ledger"].get("status"),
+            "xuan_same_window_handoff_tiered_scorecard_status": reports[
+                "xuan_same_window_handoff_tiered_scorecard"
+            ].get("status"),
+            "xuan_same_window_shadow_design_packet_status": reports[
+                "xuan_same_window_shadow_design_packet"
+            ].get("status"),
+            "xuan_same_window_shadow_readiness_gate_status": reports[
+                "xuan_same_window_shadow_readiness_gate"
+            ].get("status"),
+            "xuan_same_window_shadow_start_preflight_status": reports[
+                "xuan_same_window_shadow_start_preflight"
+            ].get("status"),
+            "xuan_same_window_no_order_shadow_start_preflight_status": reports[
+                "xuan_same_window_no_order_shadow_start_preflight"
+            ].get("status"),
+            "xuan_same_window_no_order_shadow_engineering_preflight_ready": no_order_shadow_start_preflight_manifest.get(
+                "engineering_preflight_ready"
+            ),
+            "xuan_same_window_no_order_shadow_start_ready": no_order_shadow_start_preflight_manifest.get(
+                "shadow_start_ready"
+            ),
             "xuan_strategy_readiness_gate_status": reports["xuan_strategy_readiness_gate"].get("status"),
             "canonical_audit_manifest": str(paths["audit_with_l2_manifest"]),
             "canonical_audit_selected_candidate_count": (

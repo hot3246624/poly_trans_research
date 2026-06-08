@@ -1,0 +1,222 @@
+{
+  "schema": "xuan_proxy_completion_first_strategy_v1",
+  "status": "shadow_backtest_only",
+  "source_docs": [
+    "docs/research/XUAN_2026_05_02_L2_EXECUTION_FINDINGS_ZH.md",
+    "docs/research/XUAN_2026_05_03_WINNER_PROXY_GATE_ZH.md",
+    "docs/research/XUAN_PROXY_COMPLETION_FIRST_STRATEGY_V1_ZH.md"
+  ],
+  "data_window": {
+    "replay_root": "/Users/hot/web3Scientist/poly_trans_research/data/replay",
+    "trusted_start": "2026-04-27T07:25:00Z",
+    "days": [
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
+    "sample_tranches": 4587
+  },
+  "strategy": {
+    "name": "xuan_proxy_completion_first_v1",
+    "market": "BTC_5m",
+    "execution_boundary": "shadow_only",
+    "states": [
+      "Idle",
+      "OpenCandidate",
+      "FirstLegWorking",
+      "CompletionFast",
+      "CompletionSlowAllowed",
+      "RepairForced",
+      "PairCovered",
+      "Cooldown"
+    ]
+  },
+  "open_gate": {
+    "hard_blocks": [
+      {
+        "name": "stale_book",
+        "condition": "book_age_ms > 500"
+      },
+      {
+        "name": "active_tranche_exists",
+        "condition": "active_tranche == true"
+      },
+      {
+        "name": "negative_l2_edge",
+        "condition": "first_l2_vwap - intended_first_price <= -0.01",
+        "evidence": {
+          "selected_removed_rate": 0.047744,
+          "blocked_pair_p50": 1.026723,
+          "blocked_surplus_per_size": -0.015662
+        }
+      },
+      {
+        "name": "early_negative_l2_edge",
+        "condition": "round_offset_s < 30 AND first_l2_vwap - intended_first_price <= -0.01",
+        "evidence": {
+          "n": 81,
+          "surplus_per_tranche": -3.540917,
+          "first_winner_rate": 0.432099
+        }
+      }
+    ],
+    "clip_down_rules": [
+      {
+        "name": "very_low_first_price_without_edge",
+        "condition": "intended_first_price < 0.40 AND first_l2_vwap - intended_first_price <= 0.03",
+        "clip_mult": 0.5,
+        "evidence": {
+          "first_price_lt_040_first_winner_rate": 0.258621
+        }
+      },
+      {
+        "name": "no_positive_signal",
+        "condition": "no hard block AND first_l2_vwap - intended_first_price <= 0.03",
+        "clip_mult": 0.5
+      }
+    ],
+    "positive_priority_rules": [
+      {
+        "name": "positive_l2_edge",
+        "condition": "first_l2_vwap - intended_first_price > 0.03",
+        "clip_mult": 1.0,
+        "evidence": {
+          "selected_rate": 0.116416,
+          "surplus_per_size": 0.045587,
+          "price_size_exact_subset_surplus_per_size": 0.036209
+        },
+        "warning": "Shadow positive evidence only; no-match share is elevated."
+      },
+      {
+        "name": "positive_l2_edge_clean_book",
+        "condition": "first_l2_vwap - intended_first_price > 0.03 AND first_l1_spread_ticks <= 3",
+        "clip_mult": 1.25,
+        "shadow_only": true
+      }
+    ]
+  },
+  "completion_controller": {
+    "no_same_side_add_before_pair_covered": true,
+    "modes": [
+      {
+        "name": "balanced_shadow",
+        "stages": [
+          {
+            "deadline_s": 2,
+            "pair_cost_ceiling": 0.95
+          },
+          {
+            "deadline_s": 30,
+            "pair_cost_ceiling": 1.005
+          }
+        ],
+        "evidence": {
+          "close_rate": 0.787225,
+          "pair_p50": 1.0,
+          "surplus_usdc": 3491.46
+        }
+      },
+      {
+        "name": "risk_control_shadow",
+        "stages": [
+          {
+            "deadline_s": 2,
+            "pair_cost_ceiling": 0.95
+          },
+          {
+            "deadline_s": 30,
+            "pair_cost_ceiling": 1.01
+          }
+        ],
+        "evidence": {
+          "close_rate": 0.827556,
+          "pair_p50": 1.004139,
+          "surplus_usdc": 1925.96
+        }
+      }
+    ]
+  },
+  "slow_continuation_gate": {
+    "evaluated_after_s": 30,
+    "rules": [
+      {
+        "name": "cheap_window_strong",
+        "condition": "min_pair_cost_seen_in_first_30s <= 0.90",
+        "action": "allow_slow_continuation",
+        "evidence": {
+          "selected_rate": 0.286462,
+          "first_winner_rate": 0.726027,
+          "slow_profit_rate": 0.194064,
+          "slow_bad_rate": 0.024353,
+          "surplus_per_size": 0.095495
+        }
+      },
+      {
+        "name": "cheap_window_medium",
+        "condition": "0.90 < min_pair_cost_seen_in_first_30s <= 0.95",
+        "action": "allow_slow_continuation_conservative",
+        "evidence": {
+          "selected_rate_cumulative_lte_095": 0.486375,
+          "first_winner_rate_cumulative_lte_095": 0.700134,
+          "surplus_per_size_cumulative_lte_095": 0.069317
+        }
+      },
+      {
+        "name": "no_cheap_window",
+        "condition": "min_pair_cost_seen_in_first_30s > 0.99 OR min_pair_cost_seen_in_first_30s IS NULL",
+        "action": "force_repair",
+        "evidence": {
+          "selected_rate": 0.287552,
+          "slow_profit_rate": 0.042456,
+          "slow_bad_rate": 0.086429,
+          "surplus_per_size": -0.030027
+        }
+      }
+    ]
+  },
+  "cooldown": {
+    "default_s": 10,
+    "after_repair_forced_s": 20,
+    "shadow_sweep": [
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "reporting": {
+    "required_explain_fields": [
+      "intended_first_side",
+      "intended_first_price",
+      "clip_size",
+      "round_offset_s",
+      "book_age_ms",
+      "first_l2_vwap",
+      "first_l2_edge",
+      "first_l1_spread_ticks",
+      "recent_same_minus_opp_buy_size_15s",
+      "open_gate_decision",
+      "open_gate_reason",
+      "completion_mode",
+      "min_pair_cost_seen_in_first_30s",
+      "slow_gate_decision",
+      "repair_forced_reason"
+    ],
+    "acceptance_metrics": {
+      "same_side_add_before_covered": 0,
+      "active_tranche_overlap": 0,
+      "target_30s_completion_rate_min": 0.78,
+      "target_clean_close_rate_min": 0.9,
+      "no_cheap_window_slow_wait_rate_max": 0.05
+    }
+  },
+  "hard_warnings": [
+    "Do not enforce live from this config.",
+    "Do not use settlement winner_side in live decision logic.",
+    "Do not allow same-side add before pair-covered.",
+    "Do not let profit target block fast repair for longer than the configured early profit window.",
+    "Out-of-sample data after 2026-05-01 is required before enforce discussion."
+  ]
+}

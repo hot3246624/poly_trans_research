@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW_ONLY_NOT_EXECUTED",
+  "strategy_owner_line": "CE25_NAGI_RESEARCH",
+  "strategy_family": "public_account_bucket_to_shadow_policy",
+  "created_at_bjt": "2026-06-04",
+  "source_handoff": {
+    "path": "/Users/hot/web3Scientist/poly_trans_research/docs/research/CE25_NAGI_HISTORICAL_ALPHA_HANDOFF_ZH.md",
+    "public_account_execution_truth": false,
+    "private_order_truth": false
+  },
+  "source_metrics": {
+    "export_dir": "/Users/hot/web3Scientist/poly_trans_research/data/exports/account_autoresearch_iter_ce25_7win_nagi_4win_20260604_hb2_bjt",
+    "summary_files": [
+      "iteration_report.md",
+      "account_rollup.tsv",
+      "pre_registered_proxy_summary.tsv",
+      "pre_registered_proxy_window_rollup.tsv",
+      "proxy_scoreboard.tsv"
+    ],
+    "limitations": [
+      "public_activity_profile_only",
+      "no_third_party_private_maker_truth",
+      "no_order_lifecycle_truth",
+      "pair_delay_is_outcome_or_execution_control_not_entry_signal",
+      "first_price_must_be_replaced_by_own_observed_executable_price"
+    ]
+  },
+  "data_contract": {
+    "replay_data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+    "allowed_manifest_layers": [
+      "backtest_cache/taker_buy_signal_core_v2_strict_l1",
+      "verification_store/completion_unwind_event_store_v2",
+      "derived/completion_candidate_pipeline_v1"
+    ],
+    "excluded_labels": [
+      "20260514",
+      "20260515",
+      "20260519"
+    ],
+    "raw_replay_collector_scanned": false
+  },
+  "non_claims": {
+    "private_truth_ready": false,
+    "strategy_promotion_ready": false,
+    "live_ready": false,
+    "deployable": false,
+    "canary_authorized": false,
+    "orders_authorized": false
+  },
+  "global_controls": {
+    "no_private_key": true,
+    "no_import": true,
+    "no_order": true,
+    "no_cancel": true,
+    "no_redeem": true,
+    "no_live": true,
+    "no_deploy": true,
+    "no_funding": true,
+    "no_shared_ws_dependency": true,
+    "fee_stress_rates": [
+      0.0,
+      0.025,
+      0.0283,
+      0.03
+    ],
+    "initial_acceptance_gates": {
+      "profitable_window_rate_min": 0.7,
+      "cash_pnl_min": 0.0,
+      "pair_cost_observable_max": 0.98,
+      "pair_cost_preferred_max": 0.96,
+      "resid_rate_max": 0.12,
+      "paired_action_floor_for_full_keep": 100,
+      "bad_pc_ge_100_share_p0_max": 0.25,
+      "bad_pc_ge_100_share_nagi_template_max": 0.3
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "CE25_BTC5M_LOW_PRICE_TAIL_DOWN_V1",
+      "priority": "P0",
+      "role": "main_alpha_candidate",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "primary_branch_id": "last60_down_20_35",
+      "entry": {
+        "time_to_close_s_max": 60,
+        "first_leg_side": "DOWN",
+        "first_leg_executable_price_min": 0.2,
+        "first_leg_executable_price_max": 0.35,
+        "projected_pair_cost_ceiling_initial": 0.97,
+        "projected_pair_cost_ceiling_observe": 0.98
+      },
+      "execution_controls": {
+        "completion_sla_s_aggressive": 15,
+        "completion_sla_s_conservative": 30,
+        "stop_new_entry_time_to_close_s_max": 10,
+        "resid_rate_cap": 0.12,
+        "rolling_bad_pc_ge_100_share_stop": 0.25
+      },
+      "control_branches": [
+        "last60_up_20_35",
+        "last60_side_neutral_20_35",
+        "one_to_five_min_down_20_35"
+      ],
+      "historical_support": {
+        "best_bucket": "last_60s|20-35|DOWN",
+        "markets": 125,
+        "buy_actual": 29615.34,
+        "cash_pnl": 2977.76,
+        "roi": 0.1005,
+        "pair_cost": 0.8885,
+        "resid_rate": 0.1126,
+        "bad_pc_ge_100_share": 0.2453
+      }
+    },
+    {
+      "policy_id": "CE25_BTC5M_HIGH_PRICE_STOP_1_5M_V1",
+      "priority": "P1",
+      "role": "timing_risk_filter_and_small_independent_policy",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "primary_branch_id": "one_to_five_min_65_80",
+      "entry": {
+        "time_to_close_s_min_exclusive": 60,
+        "time_to_close_s_max": 300,
+        "first_leg_executable_price_min": 0.65,
+        "first_leg_executable_price_max": 0.8,
+        "projected_pair_cost_ceiling": 0.98
+      },
+      "execution_controls": {
+        "size_multiplier_vs_p0_max": 0.5,
+        "stop_new_entry_time_to_close_s_max": 60,
+        "resid_rate_target": 0.1
+      },
+      "control_branches": [
+        "last60_65_80_control",
+        "side_neutral_65_80",
+        "down_preferred_65_80"
+      ],
+      "historical_support": {
+        "best_bucket": "65-80|1-5m",
+        "active_windows": 7,
+        "profitable_windows": 7,
+        "markets": 380,
+        "buy_actual": 37544.000466,
+        "cash_pnl": 1891.571527,
+        "roi": 0.050383,
+        "pair_cost": 0.973846,
+        "resid_rate": 0.151521,
+        "bad_pc_ge_100_share": 0.368711
+      },
+      "negative_control": {
+        "bucket": "65-80|last_60s",
+        "pair_cost": 1.001772,
+        "bad_pc_ge_100_share": 0.639169
+      }
+    },
+    {
+      "policy_id": "NAGI_LAST60_MIDPRICE_FASTPAIR_V1",
+      "priority": "P2",
+      "role": "execution_template",
+      "asset_universe": [
+        "BTC"
+      ],
+      "timeframe": "5m",
+      "primary_branch_id": "last60_midprice_fastpair",
+      "entry_branches": [
+        {
+          "branch_id": "up_35_50",
+          "first_leg_side": "UP",
+          "first_leg_executable_price_min": 0.35,
+          "first_leg_executable_price_max": 0.5
+        },
+        {
+          "branch_id": "down_50_65",
+          "first_leg_side": "DOWN",
+          "first_leg_executable_price_min": 0.5,
+          "first_leg_executable_price_max": 0.65
+        }
+      ],
+      "entry": {
+        "time_to_close_s_max": 60,
+        "projected_pair_cost_ceiling_initial": 0.97
+      },
+      "execution_controls": {
+        "completion_sla_s": 15,
+        "block_averaging_when_projected_pair_cost_gte": 1.0,
+        "hard_resid_rate_cap": 0.08,
+        "rolling_bad_pc_ge_100_share_stop": 0.3
+      },
+      "control_branches": [
+        "slowpair_15_60s_control",
+        "side_neutral_midprice_control"
+      ],
+      "historical_support": {
+        "best_bucket": "last_60s|35-50|pair_delay<=15s",
+        "active_windows": 4,
+        "profitable_windows": 3,
+        "markets": 195,
+        "buy_actual": 157044.494936,
+        "cash_pnl": 2969.114622,
+        "roi": 0.018906,
+        "pair_cost": 0.971983,
+        "resid_rate": 0.072695,
+        "bad_pc_ge_100_share": 0.436187
+      }
+    }
+  ],
+  "rejected_patterns": [
+    {
+      "id": "copy_ce25_or_nagi_full_account",
+      "reason": "full_account_bad_pair_cost_share_near_47pct"
+    },
+    {
+      "id": "low_residual_only",
+      "reason": "residual_control_is_not_alpha_without_pair_cost_and_cash_pnl"
+    },
+    {
+      "id": "ce25_15m_first50_65_delay30_60_fragile",
+      "reason": "only_3_of_7_profitable_windows_roi_0_23pct_pair_cost_0_9941_high_concentration"
+    }
+  ],
+  "next_artifacts": [
+    "CE25_NAGI_POLICY_SPEC_v0.md",
+    "run_ce25_nagi_shadow_policy_runner.py",
+    "CE25_NAGI_LOCAL_REPLAY_REPORT_v0",
+    "CE25_NAGI_REPLAY_HASH_MANIFEST_v0.json"
+  ]
+}

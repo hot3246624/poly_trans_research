@@ -18,6 +18,7 @@ import requests
 from .capture.ingest import ingest_ndjson
 from .capture.meta import MarketMetaFetchState, backfill_trades_once, capture_market_meta_once
 from .capture.raw_store import RawCaptureStore
+from .capture.settlement import fetch_condition_settlement
 from .capture.websocket_sidecar import (
     MetaPollConfig,
     SettlementPollConfig,
@@ -37,6 +38,8 @@ from .quality.replay_market_audit import (
 from .quality.startup_audit import save_startup_audit_report, run_startup_audit
 from .quality.validator import save_report, validate_replay_db
 from .replay.builder import build_replay_for_day
+from .replay.normalize import normalize_side
+from .replay.schema import init_schema
 from .user_truth import resolve_user_auth_config
 from .constants import (
     CHANNEL_XUAN_ACTIVITY,
@@ -837,6 +840,375 @@ def _load_xuan_backfill_markets(
     return sorted(markets.values(), key=lambda m: (m["start_ms"], m["symbol"], m["slug"]))
 
 
+def _load_outcome_backfill_markets(
+    *,
+    replay_root: str | Path,
+    days: Iterable[str],
+    symbols: Iterable[str],
+    start_ms: Optional[int] = None,
+    end_ms: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    allowed_symbols = {s.strip().upper() for s in symbols if s.strip()}
+    markets: List[Dict[str, Any]] = []
+    for day in days:
+        db = _replay_db_path(replay_root, day)
+        if not db.exists():
+            LOG.warning("outcome backfill skipping missing replay db: %s", db)
+            continue
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            clauses = ["condition_id IS NOT NULL", "condition_id != ''", "slug IS NOT NULL", "slug != ''"]
+            params: List[Any] = []
+            if allowed_symbols:
+                placeholders = ",".join("?" for _ in allowed_symbols)
+                clauses.append(f"upper(symbol) IN ({placeholders})")
+                params.extend(sorted(allowed_symbols))
+            if start_ms is not None:
+                clauses.append("end_ms > ?")
+                params.append(start_ms)
+            if end_ms is not None:
+                clauses.append("start_ms < ?")
+                params.append(end_ms)
+            sql = (
+                "SELECT condition_id, slug, symbol, start_ms, end_ms "
+                "FROM market_meta WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY start_ms, symbol, slug"
+            )
+            for condition_id, slug, symbol, m_start_ms, m_end_ms in conn.execute(sql, params):
+                markets.append(
+                    {
+                        "day": day,
+                        "db_path": str(db),
+                        "condition_id": str(condition_id),
+                        "slug": str(slug),
+                        "symbol": str(symbol),
+                        "start_ms": int(m_start_ms),
+                        "end_ms": int(m_end_ms),
+                    }
+                )
+        finally:
+            conn.close()
+    return markets
+
+
+def _settlement_coverage_summary(
+    conn: sqlite3.Connection,
+    *,
+    symbols: Iterable[str],
+    start_ms: Optional[int],
+    end_ms: Optional[int],
+) -> Dict[str, Any]:
+    allowed_symbols = {s.strip().upper() for s in symbols if s.strip()}
+    settlement_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(settlement_records)").fetchall()}
+    winner_expr = "s.winner_side" if "winner_side" in settlement_cols else "s.official_outcome"
+    clauses = ["1=1"]
+    params: List[Any] = []
+    if allowed_symbols:
+        placeholders = ",".join("?" for _ in allowed_symbols)
+        clauses.append(f"upper(m.symbol) IN ({placeholders})")
+        params.extend(sorted(allowed_symbols))
+    if start_ms is not None:
+        clauses.append("m.end_ms > ?")
+        params.append(start_ms)
+    if end_ms is not None:
+        clauses.append("m.start_ms < ?")
+        params.append(end_ms)
+    where = " AND ".join(clauses)
+    official_expr = f"""
+        CASE
+          WHEN s.condition_id IS NOT NULL
+           AND COALESCE({winner_expr}, s.official_outcome) IN ('YES', 'NO')
+           AND lower(COALESCE(s.resolution_source, '')) NOT LIKE '%inferred%'
+          THEN 1 ELSE 0
+        END
+    """
+    inferred_expr = """
+        CASE
+          WHEN s.condition_id IS NOT NULL
+           AND lower(COALESCE(s.resolution_source, '')) LIKE '%inferred%'
+          THEN 1 ELSE 0
+        END
+    """
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS markets_total,
+               SUM({official_expr}) AS settled_markets,
+               SUM({inferred_expr}) AS inferred_markets
+        FROM market_meta m
+        LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
+        WHERE {where}
+        """,
+        params,
+    ).fetchone()
+    markets_total = int(row[0] or 0)
+    settled_markets = int(row[1] or 0)
+    inferred_markets = int(row[2] or 0)
+
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for symbol, total, settled, inferred in conn.execute(
+        f"""
+        SELECT m.symbol,
+               COUNT(*) AS markets_total,
+               SUM({official_expr}) AS settled_markets,
+               SUM({inferred_expr}) AS inferred_markets
+        FROM market_meta m
+        LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
+        WHERE {where}
+        GROUP BY m.symbol
+        ORDER BY m.symbol
+        """,
+        params,
+    ):
+        total_i = int(total or 0)
+        settled_i = int(settled or 0)
+        by_symbol[str(symbol)] = {
+            "markets_total": total_i,
+            "settled_markets": settled_i,
+            "inferred_markets": int(inferred or 0),
+            "settlement_coverage_ratio": round(settled_i / total_i, 6) if total_i else 0.0,
+        }
+
+    by_source = {
+        str(source or "unknown"): int(n or 0)
+        for source, n in conn.execute(
+            f"""
+            SELECT COALESCE(s.resolution_source, 'missing') AS resolution_source, COUNT(*) AS n
+            FROM market_meta m
+            LEFT JOIN settlement_records s ON s.condition_id=m.condition_id
+            WHERE {where}
+            GROUP BY COALESCE(s.resolution_source, 'missing')
+            ORDER BY n DESC
+            """,
+            params,
+        )
+    }
+    return {
+        "markets_total": markets_total,
+        "settled_markets": settled_markets,
+        "inferred_markets": inferred_markets,
+        "settlement_coverage_ratio": round(settled_markets / markets_total, 6) if markets_total else 0.0,
+        "by_symbol": by_symbol,
+        "by_resolution_source": by_source,
+    }
+
+
+def _backfill_xuan_outcome_side(conn: sqlite3.Connection) -> Dict[str, int]:
+    def _update(table: str) -> int:
+        cur = conn.execute(
+            f"""
+            UPDATE {table}
+            SET outcome_side = CASE lower(trim(COALESCE(outcome, '')))
+                WHEN 'yes' THEN 'YES'
+                WHEN 'up' THEN 'YES'
+                WHEN 'y' THEN 'YES'
+                WHEN 'true' THEN 'YES'
+                WHEN '1' THEN 'YES'
+                WHEN 'no' THEN 'NO'
+                WHEN 'down' THEN 'NO'
+                WHEN 'n' THEN 'NO'
+                WHEN 'false' THEN 'NO'
+                WHEN '0' THEN 'NO'
+                ELSE outcome_side
+            END
+            WHERE outcome_side IS NULL OR trim(outcome_side) = ''
+            """
+        )
+        return max(0, int(cur.rowcount or 0))
+
+    return {
+        "xuan_trades_rows_updated": _update("xuan_trades"),
+        "xuan_activity_rows_updated": _update("xuan_activity"),
+    }
+
+
+def _write_settlement_record(conn: sqlite3.Connection, record: Dict[str, Any]) -> None:
+    official_outcome = normalize_side(record.get("official_outcome"))
+    winner_side = normalize_side(record.get("winner_side")) or official_outcome
+    if official_outcome is None:
+        raise ValueError("official_outcome must normalize to YES/NO")
+    conn.execute(
+        """
+        INSERT INTO settlement_records (
+            condition_id, official_outcome, winner_side, winner_token_id,
+            settle_ms, resolution_source, raw_json, capture_seq
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(condition_id) DO UPDATE SET
+            official_outcome=excluded.official_outcome,
+            winner_side=excluded.winner_side,
+            winner_token_id=excluded.winner_token_id,
+            settle_ms=excluded.settle_ms,
+            resolution_source=excluded.resolution_source,
+            raw_json=excluded.raw_json,
+            capture_seq=excluded.capture_seq
+        """,
+        (
+            str(record["condition_id"]),
+            official_outcome,
+            winner_side,
+            str(record.get("winner_token_id") or "") or None,
+            record.get("settle_ms"),
+            str(record.get("resolution_source") or "gamma_api"),
+            record.get("raw_json"),
+            int(record.get("capture_seq") or 0),
+        ),
+    )
+
+
+def cmd_backfill_market_outcomes(args: argparse.Namespace) -> int:
+    days = [d.strip() for d in args.days.split(",") if d.strip()]
+    if not days:
+        raise SystemExit("--days is required")
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    start_ms = int(_parse_utc_iso(args.trusted_start).timestamp() * 1000) if args.trusted_start else None
+    end_ms = int(_parse_utc_iso(args.end).timestamp() * 1000) if args.end else None
+    if start_ms is not None and end_ms is not None and end_ms <= start_ms:
+        raise SystemExit("--end must be later than --trusted-start")
+
+    markets = _load_outcome_backfill_markets(
+        replay_root=args.replay_root,
+        days=days,
+        symbols=symbols,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    if args.market_limit and args.market_limit > 0:
+        markets = markets[: args.market_limit]
+
+    session = requests.Session()
+    conns: Dict[str, sqlite3.Connection] = {}
+    report: Dict[str, Any] = {
+        "days": days,
+        "symbols": symbols,
+        "trusted_start": args.trusted_start,
+        "end": args.end,
+        "dry_run": bool(args.dry_run),
+        "replay_root": args.replay_root,
+        "markets_total": len(markets),
+        "fetched_outcomes": 0,
+        "missing_outcomes": 0,
+        "fetch_errors": 0,
+        "written_outcomes": 0,
+        "source_counts": {},
+        "winner_side_counts": {},
+        "samples_missing": [],
+        "samples_error": [],
+        "days_result": {},
+    }
+
+    def _day_result(day: str, db_path: str) -> Dict[str, Any]:
+        if day not in report["days_result"]:
+            report["days_result"][day] = {"db_path": db_path}
+        report["days_result"][day].setdefault("db_path", db_path)
+        for key in ("markets_total", "fetched_outcomes", "missing_outcomes", "fetch_errors", "written_outcomes"):
+            report["days_result"][day].setdefault(key, 0)
+        return report["days_result"][day]
+
+    try:
+        if not args.dry_run:
+            for day in days:
+                db = _replay_db_path(args.replay_root, day)
+                if not db.exists():
+                    continue
+                conn = sqlite3.connect(str(db))
+                conn.execute("PRAGMA busy_timeout=60000")
+                init_schema(conn)
+                conns[day] = conn
+                report["days_result"].setdefault(day, {"db_path": str(db)})
+                report["days_result"][day]["xuan_outcome_side"] = _backfill_xuan_outcome_side(conn)
+
+        for idx, market in enumerate(markets, start=1):
+            day = str(market["day"])
+            day_result = _day_result(day, str(market["db_path"]))
+            day_result["markets_total"] += 1
+            last_error: Optional[Exception] = None
+            record = None
+            for attempt in range(max(1, int(args.fetch_retries))):
+                try:
+                    record = fetch_condition_settlement(
+                        str(market["condition_id"]),
+                        market_slug=str(market["slug"]),
+                        session=session,
+                        timeout_sec=float(args.timeout_sec),
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < max(1, int(args.fetch_retries)) - 1:
+                        time.sleep(min(2.0, 0.25 * (attempt + 1)))
+
+            if last_error is not None:
+                report["fetch_errors"] += 1
+                day_result["fetch_errors"] += 1
+                if len(report["samples_error"]) < 20:
+                    report["samples_error"].append({**market, "error": str(last_error)})
+
+            if record is None:
+                report["missing_outcomes"] += 1
+                day_result["missing_outcomes"] += 1
+                if len(report["samples_missing"]) < 50:
+                    report["samples_missing"].append(market)
+            else:
+                record["winner_side"] = normalize_side(record.get("winner_side")) or normalize_side(record.get("official_outcome"))
+                record["capture_seq"] = 0
+                source = str(record.get("resolution_source") or "unknown")
+                winner_side = str(record.get("winner_side") or "unknown")
+                report["source_counts"][source] = int(report["source_counts"].get(source, 0)) + 1
+                report["winner_side_counts"][winner_side] = int(report["winner_side_counts"].get(winner_side, 0)) + 1
+                report["fetched_outcomes"] += 1
+                day_result["fetched_outcomes"] += 1
+                if not args.dry_run:
+                    _write_settlement_record(conns[day], record)
+                    report["written_outcomes"] += 1
+                    day_result["written_outcomes"] += 1
+
+            if args.sleep_sec > 0:
+                time.sleep(float(args.sleep_sec))
+            if idx % max(1, args.log_every) == 0:
+                LOG.info(
+                    "market outcome backfill progress: %d/%d fetched=%d missing=%d errors=%d",
+                    idx,
+                    len(markets),
+                    report["fetched_outcomes"],
+                    report["missing_outcomes"],
+                    report["fetch_errors"],
+                )
+
+        if not args.dry_run:
+            for day, conn in conns.items():
+                conn.commit()
+                coverage = _settlement_coverage_summary(conn, symbols=symbols, start_ms=start_ms, end_ms=end_ms)
+                report["days_result"].setdefault(day, {"db_path": str(_replay_db_path(args.replay_root, day))})
+                report["days_result"][day]["post_write_coverage"] = coverage
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        else:
+            for day in days:
+                db = _replay_db_path(args.replay_root, day)
+                if not db.exists():
+                    continue
+                conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+                try:
+                    report["days_result"].setdefault(day, {"db_path": str(db)})
+                    report["days_result"][day]["pre_write_coverage"] = _settlement_coverage_summary(
+                        conn, symbols=symbols, start_ms=start_ms, end_ms=end_ms
+                    )
+                finally:
+                    conn.close()
+    finally:
+        for conn in conns.values():
+            conn.close()
+
+    report["fetch_success_ratio"] = round(report["fetched_outcomes"] / report["markets_total"], 6) if report["markets_total"] else 0.0
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOG.info("market_outcome_backfill: %s", json.dumps(report, ensure_ascii=False))
+    return 0 if report["fetch_errors"] == 0 and report["fetched_outcomes"] > 0 else 2
+
+
 def cmd_backfill_xuan_market_public(args: argparse.Namespace) -> int:
     days = [d.strip() for d in args.days.split(",") if d.strip()]
     if not days:
@@ -1009,6 +1381,8 @@ def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
         try:
             cur = conn.cursor()
             cur.execute("PRAGMA busy_timeout=60000")
+            if not args.dry_run:
+                init_schema(conn)
             trade_seen = {
                 (
                     row[0],
@@ -1074,10 +1448,10 @@ def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
                                 """
                                 INSERT INTO xuan_trades (
                                     user, poll_ts_ms, trade_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
-                                    condition_id, slug, event_slug, title, outcome, side,
+                                    condition_id, slug, event_slug, title, outcome, outcome_side, side,
                                     price, size, asset, proxy_wallet, tx_hash, trade_id,
                                     source_quality, raw_json
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     rec["user"],
@@ -1091,6 +1465,7 @@ def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
                                     rec["event_slug"],
                                     rec["title"],
                                     rec["outcome"],
+                                    rec["outcome_side"],
                                     rec["side"],
                                     rec["price"],
                                     rec["size"],
@@ -1125,10 +1500,10 @@ def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
                                 """
                                 INSERT INTO xuan_activity (
                                     user, poll_ts_ms, activity_ts_ms, recv_ms, recv_monotonic_ns, capture_seq,
-                                    condition_id, slug, event_slug, title, activity_type, outcome, side,
+                                    condition_id, slug, event_slug, title, activity_type, outcome, outcome_side, side,
                                     price, size, usdc_size, asset, proxy_wallet, tx_hash,
                                     source_quality, raw_json
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     rec["user"],
@@ -1143,6 +1518,7 @@ def cmd_merge_xuan_raw_into_replay(args: argparse.Namespace) -> int:
                                     rec["title"],
                                     rec["activity_type"],
                                     rec["outcome"],
+                                    rec["outcome_side"],
                                     rec["side"],
                                     rec["price"],
                                     rec["size"],
@@ -1305,6 +1681,8 @@ def cmd_audit_replay_market(args: argparse.Namespace) -> int:
         raw_book_max_records=max(0, int(args.raw_book_max_records)),
         taker_side_null_max_ratio=float(args.taker_side_null_max_ratio),
         trusted_start_ms=int(_parse_utc_iso(args.trusted_start).timestamp() * 1000) if args.trusted_start else None,
+        outcome_symbols=[s.strip().upper() for s in args.outcome_symbols.split(",") if s.strip()],
+        min_official_outcome_coverage=float(args.min_official_outcome_coverage),
     )
     report = run_market_replay_audit(config)
     save_audit_report(report, Path(args.output), Path(args.markdown_output) if args.markdown_output else None)
@@ -1450,6 +1828,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw-book-max-records", type=int, default=250_000)
     p.add_argument("--taker-side-null-max-ratio", type=float, default=0.05)
     p.add_argument("--trusted-start", help="Optional UTC ISO/ms trusted capture start; earlier BTC gaps are ignored")
+    p.add_argument("--outcome-symbols", default="BTC,ETH,SOL,XRP", help="Comma-separated symbols for outcome coverage audit")
+    p.add_argument("--min-official-outcome-coverage", type=float, default=0.99)
     p.add_argument("--min-mem-available-mib", type=int, default=1536)
     p.add_argument("--min-disk-free-gb", type=int, default=100)
     p.add_argument("--max-load-1m", type=float, default=1.5)
@@ -1471,6 +1851,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-sec", type=int, default=20)
     p.add_argument("--output", help="Optional JSON report path")
     p.set_defaults(func=cmd_backfill_xuan_public)
+
+    p = sub.add_parser(
+        "backfill-market-outcomes",
+        help="Backfill official YES/NO outcomes from public market metadata into replay settlement_records",
+    )
+    p.add_argument("--days", required=True, help="Comma-separated UTC days with replay market_meta")
+    p.add_argument("--symbols", default="BTC,ETH,SOL,XRP", help="Comma-separated symbols, default: BTC,ETH,SOL,XRP")
+    p.add_argument("--trusted-start", help="Optional UTC ISO lower bound for market windows")
+    p.add_argument("--end", help="Optional UTC ISO upper bound for market windows")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--replay-root", default="data/replay")
+    p.add_argument("--market-limit", type=int, default=0, help="Limit markets for validation; 0 means all")
+    p.add_argument("--timeout-sec", type=float, default=15.0)
+    p.add_argument("--fetch-retries", type=int, default=3, help="Retry transient outcome API failures per market")
+    p.add_argument("--sleep-sec", type=float, default=0.02, help="Polite pause between Gamma requests")
+    p.add_argument("--log-every", type=int, default=100)
+    p.add_argument("--output", help="Optional JSON report path")
+    p.set_defaults(func=cmd_backfill_market_outcomes)
 
     p = sub.add_parser(
         "backfill-xuan-market-public",

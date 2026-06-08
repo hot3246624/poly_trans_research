@@ -30,7 +30,7 @@ class SettlementFetchTests(unittest.TestCase):
         self.assertEqual(record["market_slug"], "btc-updown-5m-123")
         self.assertEqual(record["official_outcome"], "YES")
         self.assertEqual(record["winner_token_id"], "yes_token")
-        self.assertEqual(record["resolution_source"], "gamma_market")
+        self.assertEqual(record["resolution_source"], "gamma_api")
 
         _, kwargs = session.get.call_args
         self.assertEqual(kwargs["params"], {"slug": "btc-updown-5m-123", "closed": "true"})

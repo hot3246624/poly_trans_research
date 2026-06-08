@@ -1,0 +1,217 @@
+{
+  "schema": "fastcancel_shadow_sidecar_v1",
+  "status": "shadow_ready_replay_validated_no_enforce",
+  "source_reports": [
+    "docs/research/XUAN_SURPASS_ITERATION_2026_05_03_ZH.md"
+  ],
+  "source_outputs": {
+    "leader": "data/exports/dual_window_fastcancel_combo_0427_0501_early_plus_mid30_60_delta5_dynamic_upclip160_delta014_l2_price_lt050_180_else120_slipstress",
+    "queue_stress_extra60": "data/exports/dual_window_fastcancel_combo_0427_0501_delta5_dynamic_upclip160_delta014_extra60_l2_price_lt050_180_else120",
+    "rejected_delta4": "data/exports/dual_window_fastcancel_combo_0427_0501_early_plus_mid30_60_delta4_dynamic_upclip160_delta014_l2_price_lt050_180_else120"
+  },
+  "data_window": {
+    "replay_root": "/Users/hot/web3Scientist/poly_trans_research/data/replay",
+    "trusted_start": "2026-04-27T07:25:00Z",
+    "days": [
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
+    "symbols": [
+      "BTC"
+    ],
+    "interval_sec": 300
+  },
+  "execution_boundary": {
+    "mode": "shadow_only",
+    "place_real_orders": false,
+    "send_rest": false,
+    "use_user_truth_for_validation_only": true,
+    "winner_side_allowed_in_live_decision": false
+  },
+  "strategy": {
+    "name": "frequency_expanded_dual_window_fastcancel",
+    "first_leg": {
+      "order_type": "maker_buy",
+      "price": "current_best_bid",
+      "fill_timeout_s": 15,
+      "fill_proxy": "public_sell_flow_queue_full",
+      "cancel_if_unfilled": true
+    },
+    "open_windows": [
+      {
+        "name": "early_10_20_delta4_bid50",
+        "min_offset_s": 10,
+        "max_offset_s": 20,
+        "min_prev_bid_delta_1s": 0.04,
+        "min_side_bid": 0.4,
+        "max_side_bid": 0.5,
+        "max_spread_ticks": 1,
+        "max_top_bid_sz": 250
+      },
+      {
+        "name": "mid_30_60_delta5_bid55_top100",
+        "min_offset_s": 30,
+        "max_offset_s": 60,
+        "min_prev_bid_delta_1s": 0.05,
+        "min_side_bid": 0.4,
+        "max_side_bid": 0.55,
+        "max_spread_ticks": 2,
+        "max_opp_spread_ticks": 2,
+        "max_immediate_pair_cost": 1.0,
+        "max_top_bid_sz": 100
+      }
+    ],
+    "sizing": {
+      "base_clip": 60,
+      "dynamic_upclip": {
+        "enabled": true,
+        "condition": "prev_bid_delta_1s >= 0.14",
+        "effective_clip": 160,
+        "alternate_if_completion_friction_high": {
+          "condition": "prev_bid_delta_1s >= 0.15",
+          "effective_clip": 160
+        }
+      },
+      "fixed_clip_120_or_160_default": false
+    },
+    "state_machine": {
+      "max_active_tranche_per_market": 1,
+      "same_side_add_before_covered": false,
+      "no_fill_block_s": 15,
+      "cooldown_after_close_s": 10,
+      "tail_freeze_s": 60
+    },
+    "completion_controller": {
+      "primary": {
+        "deadline_s": 30,
+        "pair_cost_ceiling": 0.95
+      },
+      "slow_path": {
+        "allow_if_min_pair_cost_seen_30s_lte": 0.99,
+        "deadline_s": 120,
+        "pair_cost_ceiling": 0.98
+      },
+      "repair": {
+        "start_after_s": 30,
+        "deadline_s": 60,
+        "pair_cost_ceiling": 1.04
+      }
+    },
+    "residual_exit": {
+      "default_exit_delay_s": 120,
+      "conditional_exit": {
+        "condition": "first_price < 0.50",
+        "exit_delay_s": 180
+      },
+      "fallback_if_180s_exit_truth_bad": {
+        "condition": "min_pair_cost_seen_30s <= 1.01",
+        "exit_delay_s": 180,
+        "else_exit_delay_s": 120
+      }
+    }
+  },
+  "replay_evidence": {
+    "leader": {
+      "attempts": 237,
+      "fills": 46,
+      "raw_pnl": 284.6,
+      "l2_pnl": 259.2029,
+      "positive_days": "5/5",
+      "weakest_day_pnl": 22.8,
+      "l2_plus_1c_friction_pnl": 228.6029,
+      "l2_plus_2c_friction_pnl": 198.0029,
+      "l2_plus_3c_friction_pnl": 167.4029,
+      "l2_plus_4c_friction_pnl": 136.8029,
+      "l2_plus_5c_friction_pnl": 106.2029
+    },
+    "rejected_delta4": {
+      "attempts": 315,
+      "fills": 63,
+      "l2_pnl": 169.8487,
+      "positive_days": "4/5",
+      "weakest_day_pnl": -16.7028,
+      "verdict": "too many low-quality states; keep shadow default at mid-window delta>=5c"
+    },
+    "queue_stress_extra60": {
+      "fills": 27,
+      "l2_pnl": 76.6115,
+      "positive_days": "4/5",
+      "weakest_day_pnl": -15.5406,
+      "verdict": "enforce requires actual maker fill quality close to queue_full, not queue_full+60"
+    }
+  },
+  "required_shadow_events": [
+    "fastcancel_open_candidate",
+    "fastcancel_would_place_first_maker",
+    "fastcancel_first_fill_truth_or_proxy",
+    "fastcancel_completion_window",
+    "fastcancel_slow_path_decision",
+    "fastcancel_repair_decision",
+    "fastcancel_residual_exit_plan",
+    "fastcancel_episode_summary"
+  ],
+  "required_shadow_fields": [
+    "market_slug",
+    "condition_id",
+    "candidate_ts_ms",
+    "candidate_offset_s",
+    "window_name",
+    "first_side",
+    "side_bid",
+    "opp_ask",
+    "prev_bid_delta_1s",
+    "spread_ticks",
+    "opp_spread_ticks",
+    "top_bid_sz",
+    "queue_same",
+    "base_clip",
+    "effective_clip",
+    "upclip_reason",
+    "order_price",
+    "required_size_proxy",
+    "actual_first_order_placed",
+    "actual_first_fill_ts_ms",
+    "actual_first_fill_qty",
+    "actual_first_fill_vwap",
+    "proxy_queue_full_fill_ts_ms",
+    "extra_required_size_equivalent",
+    "completion_pair_cost_l1",
+    "completion_l2_vwap",
+    "completion_vwap_drift",
+    "min_pair_cost_seen_30s",
+    "slow_path_allowed",
+    "repair_used",
+    "residual_exit_delay_s",
+    "residual_exit_vwap",
+    "episode_status",
+    "shadow_pnl_l2",
+    "shadow_pnl_with_2c_friction"
+  ],
+  "shadow_pass_fail": {
+    "minimum_observation_window": "3 full BTC trading days; prefer 5 full days",
+    "candidate_count_min_per_day": 20,
+    "p0_blockers": [
+      "actual maker fill quality resembles queue_full+60 or worse",
+      "completion_vwap_drift_p50 > 0.01",
+      "completion_vwap_drift_p90 > 0.03",
+      "conditional 180s residual exit has negative realized VWAP edge versus replay L2",
+      "any day shadow_pnl_with_2c_friction <= 0 after at least 20 candidates"
+    ],
+    "promote_to_enforce_discussion_only_if": [
+      "3-5 day shadow remains positive after 2c friction",
+      "actual fill rate is close to replay queue_full leader and materially better than extra60 stress",
+      "residual exit path remains positive without relying on winner_side",
+      "no hidden same-side inventory accumulation"
+    ]
+  },
+  "hard_warnings": [
+    "This is a sidecar, not xuan's full main engine.",
+    "Do not enforce from replay evidence alone.",
+    "Do not loosen mid-window delta below 0.05 without a new out-of-sample replay window.",
+    "Do not use sell_vol_until_fill, fill_delay, or winner_side as live open/sizing gates.",
+    "If own execution truth is not available, this config can only produce market-side shadow, not enforce evidence."
+  ]
+}

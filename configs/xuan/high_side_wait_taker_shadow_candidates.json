@@ -1,0 +1,52 @@
+{
+  "schema": "high_side_wait_taker_shadow_candidates_v1_config",
+  "source": {
+    "notes": "Research config only. Replay SQLite remains the data source; this file is not a data source."
+  },
+  "modes": [
+    {
+      "name": "balanced_180_240_taker_high_ask",
+      "priority": 1,
+      "first_price_kind": "ask",
+      "offset_start_s": 180,
+      "offset_end_s": 240,
+      "first_price_min": 0.50,
+      "first_price_max": 0.85,
+      "clip_size": 180,
+      "wait_budget_s": 70,
+      "residual_cap_qty_candidates": [220, 320],
+      "first_depth_required": true
+    },
+    {
+      "name": "broad_early_taker_high_ask",
+      "priority": 2,
+      "first_price_kind": "ask",
+      "offset_start_s": 0,
+      "offset_end_s": 120,
+      "first_price_min": 0.50,
+      "first_price_max": 0.85,
+      "clip_size": 180,
+      "wait_budget_s": 70,
+      "residual_cap_qty_candidates": [220, 320],
+      "first_depth_required": true
+    },
+    {
+      "name": "tail_sniper_240_285_taker_small_clip",
+      "priority": 3,
+      "first_price_kind": "ask",
+      "offset_start_s": 240,
+      "offset_end_s": 285,
+      "first_price_min": 0.55,
+      "first_price_max": 0.70,
+      "clip_size": 140,
+      "wait_budget_s": 70,
+      "residual_cap_qty_candidates": [140, 220],
+      "first_depth_required": true
+    }
+  ],
+  "hard_blocks": {
+    "first_price_lt_0_50": true,
+    "first_price_gte_0_85_for_slow_improvement_default": true,
+    "tail_240_285_clip_gte_180_default": true
+  }
+}

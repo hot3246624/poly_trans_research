@@ -54,6 +54,11 @@ DEFAULT_BTC_SOURCE_SEMANTICS_REPORT = (
     DEFAULT_DATA_ROOT
     / "derived/contract_examples/btc_source_semantics_delta_latest/BTC_SOURCE_SEMANTICS_DELTA_REPORT.json"
 )
+DEFAULT_BTC_SEMANTIC_ALIGNMENT_EXPERIMENT = (
+    DEFAULT_DATA_ROOT
+    / "derived/contract_examples/btc_parity_semantic_alignment_latest/"
+    / "BTC_PARITY_SEMANTIC_ALIGNMENT_EXPERIMENT.json"
+)
 
 
 def utc_now() -> str:
@@ -149,6 +154,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         read_json(args.btc_source_semantics_report) if args.btc_source_semantics_report.exists() else {}
     )
     btc_source_semantics_summary = btc_source_semantics_report.get("summary") or {}
+    btc_semantic_alignment = (
+        read_json(args.btc_semantic_alignment_experiment)
+        if args.btc_semantic_alignment_experiment.exists()
+        else {}
+    )
+    btc_semantic_alignment_summary = btc_semantic_alignment.get("summary") or {}
 
     search_manifest_path = (
         data_root
@@ -244,6 +255,21 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "btc_source_runner_candidate_ratio_new_over_old": btc_source_semantics_summary.get(
             "runner_candidate_ratio_new_over_old"
+        ),
+        "btc_semantic_alignment_status": (
+            btc_semantic_alignment.get("status") if btc_semantic_alignment else "MISSING"
+        ),
+        "btc_semantic_alignment_primary_old_action_match_rate": btc_semantic_alignment_summary.get(
+            "primary_old_action_match_rate"
+        ),
+        "btc_semantic_alignment_primary_new_action_match_rate": btc_semantic_alignment_summary.get(
+            "primary_new_action_match_rate"
+        ),
+        "btc_semantic_alignment_primary_old_row_coverage": btc_semantic_alignment_summary.get(
+            "primary_old_row_coverage_in_common_buckets"
+        ),
+        "btc_semantic_alignment_primary_new_row_coverage": btc_semantic_alignment_summary.get(
+            "primary_new_row_coverage_in_common_buckets"
         ),
         "best_btc_queue_pnl": max(
             [value for value in (to_float(row.get("pnl")) for row in catalog_rows if str(row.get("asset") or "").upper() == "BTC") if value is not None],
@@ -344,6 +370,20 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "notes": "New adapter uses core md_trades taker-side normalization and BUY runner events; old baseline uses SELL/mixed source-event semantics.",
         },
         {
+            "metric": "semantic_alignment_selected_action_match_rate_5s",
+            "old_btc_baseline": btc_semantic_alignment_summary.get("primary_old_action_match_rate"),
+            "multiasset_v1": btc_semantic_alignment_summary.get("primary_new_action_match_rate"),
+            "status": btc_semantic_alignment.get("status") or "MISSING",
+            "notes": "Event/window-level same-side selected-action alignment under the BTC semantic parity experiment.",
+        },
+        {
+            "metric": "semantic_alignment_runner_bucket_row_coverage_5s",
+            "old_btc_baseline": btc_semantic_alignment_summary.get("primary_old_row_coverage_in_common_buckets"),
+            "multiasset_v1": btc_semantic_alignment_summary.get("primary_new_row_coverage_in_common_buckets"),
+            "status": btc_semantic_alignment.get("status") or "MISSING",
+            "notes": "Runner-event 5s same-side bucket row coverage; below parity thresholds means BTC parity remains blocked.",
+        },
+        {
             "metric": "old_selected_actions_l2_bridge_match_rate",
             "old_btc_baseline": old_l2_summary.get("both_side_match_rate"),
             "multiasset_v1": "",
@@ -385,6 +425,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "new_btc_normalized_adapter": v1_btc_sm_metrics.get("candidate_count"),
             "parity_status": "DELTA_REQUIRES_SOURCE_ATTRIBUTION",
             "impact": "New/old runner candidate ratio is recorded in BTC_SOURCE_SEMANTICS_DELTA_REPORT.",
+        },
+        {
+            "field": "event_window_semantic_alignment",
+            "old_btc_baseline": btc_semantic_alignment_summary.get("primary_old_action_match_rate"),
+            "new_btc_normalized_adapter": btc_semantic_alignment_summary.get("primary_new_action_match_rate"),
+            "parity_status": btc_semantic_alignment.get("status") or "MISSING",
+            "impact": "Same-side selected-action and runner-window coverage does not meet explicit parity thresholds.",
         },
         {
             "field": "selected_candidate_count",
@@ -486,6 +533,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         blockers.append("btc_merge_turnover_report_missing")
     if btc_source_semantics_report.get("status") != "OK_BTC_SOURCE_SEMANTICS_DELTA_READY":
         blockers.append("btc_source_semantics_delta_report_missing")
+    if btc_semantic_alignment.get("status") != "OK_BTC_SEMANTIC_ALIGNMENT_PROVEN":
+        blockers.append("btc_semantic_alignment_experiment_not_proven")
     if old_l2_bridge.get("status") != "OK_OLD_BASELINE_L2_BRIDGE_READY":
         blockers.append("old_selected_actions_not_l2_bridged")
     if (old_l2_bridge.get("anchor_policy") or {}).get("status") != "SURROGATE_ANCHORS_CONSTRUCTED_SOURCE_LABELS_NOT_FOUND":
@@ -514,6 +563,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "btc_merge_rounds_per_market": v1_metrics["btc_merge_rounds_per_market"],
         "btc_source_runner_candidate_ratio_new_over_old": v1_metrics[
             "btc_source_runner_candidate_ratio_new_over_old"
+        ],
+        "btc_semantic_alignment_status": v1_metrics["btc_semantic_alignment_status"],
+        "btc_semantic_alignment_primary_old_action_match_rate": v1_metrics[
+            "btc_semantic_alignment_primary_old_action_match_rate"
+        ],
+        "btc_semantic_alignment_primary_new_action_match_rate": v1_metrics[
+            "btc_semantic_alignment_primary_new_action_match_rate"
+        ],
+        "btc_semantic_alignment_primary_old_row_coverage": v1_metrics[
+            "btc_semantic_alignment_primary_old_row_coverage"
+        ],
+        "btc_semantic_alignment_primary_new_row_coverage": v1_metrics[
+            "btc_semantic_alignment_primary_new_row_coverage"
         ],
         "l2_top_aligned_mart_status": l2_top_status,
         "l1_from_l2_parity_status": l2_parity_status,
@@ -593,6 +655,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "summary": btc_source_semantics_summary,
             "interpretation": btc_source_semantics_report.get("interpretation") if btc_source_semantics_report else {},
         },
+        "btc_parity_semantic_alignment_experiment": {
+            "manifest": str(args.btc_semantic_alignment_experiment),
+            "status": btc_semantic_alignment.get("status") if btc_semantic_alignment else "MISSING",
+            "summary": btc_semantic_alignment_summary,
+            "decision": btc_semantic_alignment.get("decision") if btc_semantic_alignment else {},
+        },
         "multiasset_v1_metrics": v1_metrics,
         "multiasset_v1_audit_csv": str(audit_csv),
         "l1_from_l2_parity": {
@@ -649,9 +717,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "BTC source semantics delta report is available."
             if btc_source_semantics_report.get("status") == "OK_BTC_SOURCE_SEMANTICS_DELTA_READY"
             else "BTC source semantics delta report is missing.",
+            "BTC semantic alignment experiment is proven."
+            if btc_semantic_alignment.get("status") == "OK_BTC_SEMANTIC_ALIGNMENT_PROVEN"
+            else "BTC semantic alignment experiment is present but does not prove parity.",
         ],
         "minimum_remaining_requirements": [
             "Normalize or explicitly accept BTC taker-side/source-event semantics.",
+            "Raise same-source event/window alignment to explicit parity thresholds or migrate both baselines to one normalized source contract.",
             "Match merge/redeem turnover to old source/event-generation semantics after taker-side normalization.",
         ],
     }
@@ -681,6 +753,11 @@ def main() -> int:
     parser.add_argument("--btc-rescue-adjusted-ledger", type=Path, default=DEFAULT_BTC_RESCUE_ADJUSTED_LEDGER)
     parser.add_argument("--btc-merge-turnover-report", type=Path, default=DEFAULT_BTC_MERGE_TURNOVER_REPORT)
     parser.add_argument("--btc-source-semantics-report", type=Path, default=DEFAULT_BTC_SOURCE_SEMANTICS_REPORT)
+    parser.add_argument(
+        "--btc-semantic-alignment-experiment",
+        type=Path,
+        default=DEFAULT_BTC_SEMANTIC_ALIGNMENT_EXPERIMENT,
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     args.data_root = args.data_root.expanduser()
@@ -695,6 +772,7 @@ def main() -> int:
     args.btc_rescue_adjusted_ledger = args.btc_rescue_adjusted_ledger.expanduser()
     args.btc_merge_turnover_report = args.btc_merge_turnover_report.expanduser()
     args.btc_source_semantics_report = args.btc_source_semantics_report.expanduser()
+    args.btc_semantic_alignment_experiment = args.btc_semantic_alignment_experiment.expanduser()
     if args.output_dir is None:
         args.output_dir = args.data_root / "derived/contract_examples/backtest_v1_btc_parity_latest"
     args.output_dir = args.output_dir.expanduser()

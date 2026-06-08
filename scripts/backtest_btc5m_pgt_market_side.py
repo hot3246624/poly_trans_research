@@ -21,7 +21,7 @@ from typing import Iterable, Sequence
 
 REPLAY_ROOT = Path("/Users/hot/web3Scientist/poly_trans_research/data/replay")
 DEFAULT_DATES = ("2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30")
-TRUSTED_START_MS = 1_777_275_000_000
+TRUSTED_START_MS = 1_777_274_700_000
 OUTAGE_START_MS = 1_777_374_000_000
 OUTAGE_END_MS = 1_777_377_600_000
 POSITIVE_EDGE = 0.005

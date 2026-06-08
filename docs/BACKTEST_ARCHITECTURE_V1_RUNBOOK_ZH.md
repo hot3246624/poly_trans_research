@@ -292,6 +292,50 @@ runner_candidate_ratio_new_over_old=2.679493
 
 主因：BTC adapter 现在从 core replay `md_trades` 归一化 taker side，并按真实 `BUY` runner event 进入 state machine；旧 baseline 的 runner 入口则是 `SELL` over mixed `public_trade/l1_price_change` 语义。两边不是同一个 source-event 定义，因此 BTC parity 不能标记通过，除非未来明确接受这个 source semantics bridge，或把旧 baseline 也迁移到同一套 normalized source-event 口径。
 
+生成 BTC parity semantic alignment experiment：
+
+```bash
+uv run --with duckdb python scripts/build_btc_parity_semantic_alignment_experiment.py
+```
+
+当前 event/window 语义对齐实验结论：
+
+```text
+status=BLOCKED_BTC_SEMANTIC_ALIGNMENT_NOT_PROVEN
+same_side_selected_action_5s_old_match_rate=0.719788
+same_side_selected_action_5s_new_match_rate=0.419175
+same_side_runner_bucket_5s_old_row_coverage=0.796759
+same_side_runner_bucket_5s_new_row_coverage=0.821269
+same_side_selected_action_5s_p90_price_delta=0.06
+```
+
+这一步不是新 gate 放行器，而是 BTC parity 的语义统一实验：它把旧 baseline `SELL` runner 与新 adapter `BUY` runner 在同一 market/window 内按 same-side、opposite-complement、any-side 三种方式做 selected-action 和 runner-bucket 对齐。当前覆盖率和价格差异没有达到显式 parity 阈值，所以它加强了 `BLOCKED_BTC_BASELINE_PARITY_NOT_PROVEN` 的证据链。
+
+生成 BTC V1 old/new overlap decomposition：
+
+```bash
+uv run --with duckdb python scripts/build_btc_v1_old_baseline_overlap_decomposition.py
+```
+
+输出：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/btc_v1_old_baseline_overlap_decomposition_latest/BTC_V1_OLD_BASELINE_OVERLAP_DECOMPOSITION_REPORT.json
+$POLY_BT_ROOT/derived/contract_examples/btc_v1_old_baseline_overlap_decomposition_latest/bucket_summary_rounded.csv
+$POLY_BT_ROOT/derived/contract_examples/btc_v1_old_baseline_overlap_decomposition_latest/bucket_day_summary_rounded.csv
+$POLY_BT_ROOT/derived/contract_examples/btc_v1_old_baseline_overlap_decomposition_latest/pair_cost_distribution_rounded.csv
+```
+
+该报告把 V1 normalized selected actions 按 `(day, condition_id, side, floor(ts_ms/5000))` 是否出现在旧 BTC baseline selected actions 中拆成：
+
+```text
+old_baseline_overlap
+v1_normalized_new_only
+v1_normalized_all
+```
+
+每个 bucket 输出 `fee_after_pnl`、`net_roi`、`pair_pnl_after_fee`、`residual_settle_pnl`、`residual_zero_stress_pnl`、`qty_residual_rate`、`worst_day_fee_after_pnl`、`max_capital_tied`、`daily_capacity_estimate_at_1000`、`candidate_count`、`selected_action_count`、`fee_drag` 和 pair-cost distribution。它只做 research attribution，不证明 old parity，不授权 import/live，也不能把 residual settlement PnL 当策略 edge。
+
 生成 BTC parity gate：
 
 ```bash
@@ -372,16 +416,90 @@ uv run --with duckdb python scripts/build_xuan_backtest_v1_strategy_readiness_ga
 当前期望状态：
 
 ```text
-status=PARTIAL_XUAN_BACKTEST_V1_STRATEGY_RESEARCH_READY_NOT_PROMOTION
+status=PARTIAL_XUAN_BACKTEST_V1_SHADOW_DESIGN_READY_PROMOTION_BLOCKED_OWNER_TRUTH
 strategy_research_ready=true
 strategy_research_readiness_level=partial
+shadow_design_ready=true
+shadow_start_ready=false
 strategy_promotion_ready=false
 private_truth_ready=false
 deployable=false
 live_orders_allowed=false
 ```
 
-这个 gate 是给同事和后续 agent 的单一入口：基础设施、top-aligned L2、completion adapter、multiasset strict rescue、merge/residual split 已可用于研究；BTC parity/source semantics、xuan bridge complete、owner private truth 仍未闭环，所以不能 promotion/deploy/live。
+这个 gate 是给同事和后续 agent 的单一入口，拆成四层：
+
+```text
+strategy_research_ready: 本地回测、top-aligned L2、completion/residual adapter、coverage、rescore、capital ledger 可用于研究。
+shadow_design_ready: 可基于 search-safe + same-window handoff + capital ledger 设计 shadow/no-order。
+shadow_start_ready: 仍需用户批准、runner 冲突检查、配置和 kill-switch 复核，因此默认 false。
+strategy_promotion_ready: 必须等未来 owner orders/fills/inventory/redeem/fee/PnL 全部 reconcile，历史 shadow/public/V1 永远不能置 true。
+```
+
+基础设施、top-aligned L2、completion adapter、multiasset strict rescue、merge/residual split 已可用于 research/shadow design；BTC parity/source semantics、xuan bridge complete、owner private truth 仍未闭环，所以不能 promotion/deploy/live。
+
+生成 no-order shadow start preflight：
+
+```bash
+uv run python scripts/build_xuan_same_window_shadow_start_preflight.py
+```
+
+输出：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/XUAN_SAME_WINDOW_NO_ORDER_SHADOW_START_PREFLIGHT.json
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/xuan_same_window_no_order_shadow_runner_config.json
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/preflight_checklist.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/candidate_binding.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_start_preflight_latest/active_runner_conflict_check.json
+```
+
+当前期望：
+
+```text
+status=KEEP_XUAN_SAME_WINDOW_NO_ORDER_SHADOW_START_PREFLIGHT_ENGINEERING_READY_APPROVAL_REQUIRED
+engineering_preflight_ready=true
+active_runner_conflict_check.passed=true
+remaining_blockers=["manual_shadow_start_approval_missing"]
+shadow_start_ready=false
+dry_run_only=true
+orders_allowed=false
+live_orders_allowed=false
+candidate_import_allowed=false
+```
+
+这一步把 runner config、tier-A candidate binding、active runner conflict check、kill-switch 和 stop conditions 固化成可复现产物。它仍不是启动动作；没有用户明确批准时，`shadow_start_ready` 必须保持 false。
+
+生成 BTC tiny canary no-order shadow post-run evaluator：
+
+```bash
+uv run python scripts/evaluate_xuan_btc_tiny_canary_no_order_shadow.py
+```
+
+输入 spec：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_btc_tiny_canary_shadow_evaluation_gate_spec_latest/XUAN_BTC_TINY_CANARY_SHADOW_EVALUATION_GATE_SPEC.json
+```
+
+默认等待真实 read-only WS/no-order 三文件包：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_real_runner_report_latest/no_order_shadow_report.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_real_runner_report_latest/no_order_shadow_audit_manifest.json
+$POLY_BT_ROOT/derived/contract_examples/xuan_same_window_no_order_shadow_real_runner_report_latest/no_order_shadow_gate_summary.json
+```
+
+输出：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_btc_tiny_canary_no_order_shadow_eval_latest/XUAN_BTC_TINY_CANARY_NO_ORDER_SHADOW_EVAL.json
+$POLY_BT_ROOT/derived/contract_examples/xuan_btc_tiny_canary_no_order_shadow_eval_latest/observed_shadow_report_normalized.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_btc_tiny_canary_no_order_shadow_eval_latest/threshold_failures.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_btc_tiny_canary_no_order_shadow_eval_latest/stop_condition_events.csv
+```
+
+这个 evaluator 是 post-run strict gate：preflight 回答“是否可以启动 no-order shadow”，evaluator 回答“真实 read-only WS/no-order 三文件包是否满足 tiny canary review 门槛”。主 CSV 必须严格等于 `required_shadow_report_columns.csv` 的 33 列；audit manifest 必须证明 runner_kind、resolver、runtime fingerprint continuity 和 no-order safety；gate summary 必须提供真实 WS 观测聚合指标。没有 runner report 时，正确状态是 `BLOCKED_XUAN_BTC_TINY_CANARY_NO_ORDER_SHADOW_REPORT_MISSING`。public L2 proxy 只能证明历史 proxy gate，不能通过真实 runner gate。即使 evaluator 通过，也仍是 research/preflight review，不会设置 `private_truth_ready`、`strategy_promotion_ready` 或 `live_orders_allowed`。
 
 ## L2 边界
 
@@ -640,6 +758,25 @@ xuan_after_fee_pnl = pair_pnl + actual_settlement_residual_pnl - official_taker_
 
 它不使用 queue PnL，不代表 private truth，也不允许直接导入 live candidate。
 
+同一脚本还会输出 top market 的 same-window handoff：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/xuan_completion_candidate_rescore_latest/xuan_completion_candidate_same_window_handoff.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_completion_candidate_rescore_latest/xuan_completion_candidate_same_window_handoff_actions.csv
+$POLY_BT_ROOT/derived/contract_examples/xuan_completion_candidate_rescore_latest/xuan_completion_candidate_same_window_handoff_residual_lots.csv
+```
+
+当前默认 handoff 覆盖 top 100 market：
+
+```text
+handoff_market_count=100
+handoff_action_rows=1,966
+handoff_residual_lot_rows=96
+avg_same_window_duration_s≈113.997390
+```
+
+handoff 文件用于把 market-level top candidate 交接到同窗 selected actions、YES/NO side sequence、seed/fee/pair state、residual lots；它仍然是 research-only，不是 owner private truth。
+
 生成 per-asset coverage scorecard：
 
 ```bash
@@ -679,6 +816,25 @@ daily_capacity_estimate_at_notional($1000)≈83.020766
 ```
 
 `daily_capacity_estimate_at_notional` 是 2026-05-02..2026-05-18 valid-day 全窗口按 day_count 归一后的研究代理，不是实盘承诺。它用于回答“给 1000 美金资本上限，大约能承载多少研究 PnL”，还必须经过 same-window handoff 和 owner private truth gate。
+
+BTC tiny canary preflight review 使用独立 filter packet，不复用全局 capital ledger：
+
+```bash
+uv run --with duckdb python scripts/build_btc_same_window_canary_preflight.py
+```
+
+输出：
+
+```text
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/manifest.json
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/source_semantics_contract.json
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/filter_capital_ledger.json
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/research_only_import_contract.csv
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/owner_private_truth_schema.json
+$POLY_BT_ROOT/derived/contract_examples/btc_same_window_residual_share_le_3pct_v1_canary_preflight_latest/preflight_checklist.json
+```
+
+这个 packet 只表示 `canary_preflight_ready`，不表示 `tiny_canary_start_ready`、`live_ready` 或 `private_truth_ready`。`research_only_import_contract.csv` 必须保持 `dry_run_only=true`、`import_enabled=false`、`candidate_import_allowed=false`。
 
 未来 private truth 正式流程固定为：
 

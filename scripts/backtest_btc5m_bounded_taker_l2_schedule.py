@@ -54,7 +54,7 @@ def iso_ms(ms: int | None) -> str | None:
 
 
 def connect_ro(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only = ON")
     return conn
@@ -229,27 +229,26 @@ def ask_levels(row: sqlite3.Row) -> tuple[tuple[float, float], ...]:
 def load_l2_books(
     conn: sqlite3.Connection, condition_id: str, start_ms: int, end_ms: int
 ) -> dict[str, list[L2Book]]:
-    rows = conn.execute(
-        """
-        SELECT recv_ms, market_side,
-               ask1_px, ask1_sz, ask2_px, ask2_sz, ask3_px, ask3_sz,
-               ask4_px, ask4_sz, ask5_px, ask5_sz
-        FROM md_book_l2
-        WHERE condition_id=?
-          AND recv_ms >= ?
-          AND recv_ms < ?
-          AND market_side IN ('YES', 'NO')
-        ORDER BY recv_ms, id
-        """,
-        (condition_id, start_ms, end_ms),
-    ).fetchall()
     out = {"YES": [], "NO": []}
-    for row in rows:
-        levels = ask_levels(row)
-        if not levels:
-            continue
-        side = str(row["market_side"])
-        out[side].append(L2Book(recv_ms=int(row["recv_ms"]), side=side, asks=levels))
+    for side in ("YES", "NO"):
+        rows = conn.execute(
+            """
+            SELECT recv_ms, market_side,
+                   ask1_px, ask1_sz, ask2_px, ask2_sz, ask3_px, ask3_sz,
+                   ask4_px, ask4_sz, ask5_px, ask5_sz
+            FROM md_book_l2
+            WHERE condition_id=?
+              AND market_side=?
+              AND recv_ms >= ?
+              AND recv_ms < ?
+            ORDER BY recv_ms
+            """,
+            (condition_id, side, start_ms, end_ms),
+        ).fetchall()
+        for row in rows:
+            levels = ask_levels(row)
+            if levels:
+                out[side].append(L2Book(recv_ms=int(row["recv_ms"]), side=side, asks=levels))
     return out
 
 
@@ -300,7 +299,7 @@ def load_l2_window(
           AND market_side=?
           AND recv_ms >= ?
           AND recv_ms <= ?
-        ORDER BY recv_ms, id
+        ORDER BY recv_ms
         """,
         (condition_id, side, start_ms, end_ms),
     ).fetchall()
@@ -927,11 +926,17 @@ def main() -> int:
     parser.add_argument("--max-l2-age-ms", type=int, default=750)
     parser.add_argument("--max-markets", type=int, default=0)
     parser.add_argument("--progress-every", type=int, default=0)
+    parser.add_argument(
+        "--skip-day-max",
+        action="store_true",
+        help="Skip max timestamp scan for known-complete published replay days.",
+    )
     args = parser.parse_args()
 
     days = [day.strip() for day in args.days.split(",") if day.strip()]
     schedules = [parse_schedule(x.strip()) for x in args.schedules.split(";") if x.strip()]
     modes = load_modes(Path(args.modes_file))
+    min_mode_offset_s = min((mode["offset_start_s"] for mode in modes), default=0)
     rows: list[dict[str, Any]] = []
     db_summaries: list[dict[str, Any]] = []
 
@@ -941,7 +946,8 @@ def main() -> int:
             continue
         conn = connect_ro(db_path)
         try:
-            markets = load_markets(conn, day_max_ms(conn))
+            max_ms = None if args.skip_day_max else day_max_ms(conn)
+            markets = load_markets(conn, max_ms)
             db_summaries.append({"day": day, "db_path": str(db_path), "markets": len(markets)})
             if args.max_markets > 0:
                 markets = markets[: args.max_markets]
@@ -964,7 +970,11 @@ def main() -> int:
                 l1_books = load_l1_books(conn, str(market["condition_id"]), start_ms, end_ms)
                 if not l1_books:
                     continue
-                l2_books = load_l2_books(conn, str(market["condition_id"]), start_ms, end_ms)
+                l2_start_ms = max(
+                    start_ms,
+                    start_ms + int(min_mode_offset_s * 1000) - args.max_l2_age_ms,
+                )
+                l2_books = load_l2_books(conn, str(market["condition_id"]), l2_start_ms, end_ms)
                 market_rows = scan_market(
                     market,
                     l1_books,

@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS xuan_trades (
     event_slug TEXT,
     title TEXT,
     outcome TEXT,
+    outcome_side TEXT,
     side TEXT,
     price REAL,
     size REAL,
@@ -131,6 +132,7 @@ CREATE TABLE IF NOT EXISTS xuan_activity (
     title TEXT,
     activity_type TEXT,
     outcome TEXT,
+    outcome_side TEXT,
     side TEXT,
     price REAL,
     size REAL,
@@ -228,8 +230,11 @@ CREATE TABLE IF NOT EXISTS user_ws_log (
 CREATE TABLE IF NOT EXISTS settlement_records (
     condition_id TEXT PRIMARY KEY,
     official_outcome TEXT NOT NULL,
+    winner_side TEXT,
+    winner_token_id TEXT,
     settle_ms INTEGER,
     resolution_source TEXT,
+    raw_json TEXT,
     capture_seq INTEGER NOT NULL
 );
 
@@ -266,6 +271,41 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column_def: str) -> Non
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
 
 
+def _ensure_views(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP VIEW IF EXISTS market_meta_with_outcome")
+    conn.execute(
+        """
+        CREATE VIEW market_meta_with_outcome AS
+        SELECT
+            m.*,
+            s.official_outcome,
+            COALESCE(s.winner_side, s.official_outcome) AS winner_side,
+            s.winner_token_id,
+            s.settle_ms,
+            s.resolution_source
+        FROM market_meta m
+        LEFT JOIN settlement_records s ON s.condition_id = m.condition_id
+        """
+    )
+
+
+def _ensure_post_migration_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_xuan_trades_outcome_side ON xuan_trades(outcome_side)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_xuan_activity_outcome_side ON xuan_activity(outcome_side)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_settlement_records_winner_side ON settlement_records(winner_side)")
+
+
+def _backfill_existing_normalized_columns(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE settlement_records
+        SET winner_side = official_outcome
+        WHERE (winner_side IS NULL OR TRIM(winner_side) = '')
+          AND official_outcome IN ('YES', 'NO')
+        """
+    )
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _ensure_column(conn, "md_trades", "maker_address TEXT")
@@ -273,4 +313,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "md_trades", "raw_json TEXT")
     _ensure_column(conn, "md_book_l1", "raw_json TEXT")
     _ensure_column(conn, "own_fill_events", "raw_json TEXT")
+    _ensure_column(conn, "settlement_records", "winner_side TEXT")
+    _ensure_column(conn, "settlement_records", "winner_token_id TEXT")
+    _ensure_column(conn, "settlement_records", "raw_json TEXT")
+    _ensure_column(conn, "xuan_trades", "outcome_side TEXT")
+    _ensure_column(conn, "xuan_activity", "outcome_side TEXT")
+    _ensure_post_migration_indexes(conn)
+    _backfill_existing_normalized_columns(conn)
+    _ensure_views(conn)
     conn.commit()

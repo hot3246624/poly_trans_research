@@ -1,0 +1,200 @@
+{
+  "schema": "xuan_winner_proxy_gate_shadow_v1",
+  "status": "research_shadow_only",
+  "source_reports": [
+    "docs/research/XUAN_2026_05_02_L2_EXECUTION_FINDINGS_ZH.md",
+    "docs/research/XUAN_2026_05_03_WINNER_PROXY_GATE_ZH.md"
+  ],
+  "data_window": {
+    "replay_root": "/Users/hot/web3Scientist/poly_trans_research/data/replay",
+    "trusted_start": "2026-04-27T07:25:00Z",
+    "days": [
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
+    "sample_tranches": 4587
+  },
+  "baseline": {
+    "first_winner_rate": 0.656856,
+    "fast_control_rate": 0.820798,
+    "slow_profit_rate": 0.107914,
+    "slow_bad_rate": 0.071288,
+    "surplus_per_size": 0.020216
+  },
+  "candidate_policy_checks": [
+    {
+      "policy": "open_block_negative_l2_edge",
+      "selected_rate": 0.952256,
+      "first_winner_rate": 0.662775,
+      "slow_profit_rate": 0.110806,
+      "slow_bad_rate": 0.071658,
+      "surplus_per_size": 0.021823,
+      "interpretation": "Low-cost P0 candidate; removes only 4.8% of xuan tranches and improves quality."
+    },
+    {
+      "policy": "open_positive_l2_edge_only",
+      "selected_rate": 0.116416,
+      "first_winner_rate": 0.651685,
+      "slow_profit_rate": 0.140449,
+      "slow_bad_rate": 0.067416,
+      "surplus_per_size": 0.045587,
+      "interpretation": "Strong positive priority/upclip signal, but too sparse to be the whole strategy."
+    },
+    {
+      "policy": "continue_after30_cheap_window_medium",
+      "selected_rate": 0.486375,
+      "first_winner_rate": 0.700134,
+      "slow_profit_rate": 0.165397,
+      "slow_bad_rate": 0.04303,
+      "surplus_per_size": 0.069317,
+      "interpretation": "Best current slow-continuation default; uses information observed after first leg."
+    },
+    {
+      "policy": "force_repair_after30_no_cheap_window",
+      "selected_rate": 0.287552,
+      "first_winner_rate": 0.567096,
+      "slow_profit_rate": 0.042456,
+      "slow_bad_rate": 0.086429,
+      "surplus_per_size": -0.030027,
+      "interpretation": "Negative-expectation slow-wait cohort; should switch to repair instead of continuing to wait."
+    }
+  ],
+  "open_time_shadow_gate": {
+    "intent": "score live-visible states before opening first leg; do not use ex-post winner_side",
+    "positive_evidence": [
+      {
+        "name": "execution_edge_vs_l2",
+        "condition": "first_l2_vwap - intended_first_price > 0.03",
+        "action": "allow_or_upclip_if_other_risk_checks_pass",
+        "evidence": {
+          "n": 534,
+          "price_size_exact_subset_n": 314,
+          "surplus_per_size": 0.045587,
+          "price_size_exact_subset_surplus_per_size": 0.036209,
+          "surplus_per_tranche": 6.29378,
+          "first_winner_rate": 0.651685
+        },
+        "warning": "No-match share is elevated in this bucket; treat as positive shadow evidence, not enforce-ready."
+      },
+      {
+        "name": "mid_price_large_clip_dislocation",
+        "condition": "0.50 <= intended_first_price < 0.55 AND clip_size > 160",
+        "action": "allow_but_require_completion_budget",
+        "evidence": {
+          "n": 206,
+          "surplus_per_size": 0.039042,
+          "surplus_per_tranche": 8.68267,
+          "first_winner_rate": 0.543689
+        },
+        "warning": "This is not a winner-proxy bucket; it is a spread/execution dislocation bucket."
+      },
+      {
+        "name": "early_round_l2_edge",
+        "condition": "round_offset_s < 30 AND first_l2_vwap - intended_first_price > 0.03",
+        "action": "allow_with_repair_budget",
+        "evidence": {
+          "n": 168,
+          "surplus_per_size": 0.055937,
+          "surplus_per_tranche": 7.478171,
+          "first_winner_rate": 0.642857
+        }
+      }
+    ],
+    "negative_evidence": [
+      {
+        "name": "negative_execution_edge",
+        "condition": "first_l2_vwap - intended_first_price <= -0.01",
+        "action": "block_or_clip_down",
+        "evidence": {
+          "n": 219,
+          "surplus_per_size": -0.015662,
+          "surplus_per_tranche": -1.612617,
+          "first_winner_rate": 0.538813
+        }
+      },
+      {
+        "name": "early_round_negative_l2_edge",
+        "condition": "round_offset_s < 30 AND first_l2_vwap - intended_first_price <= -0.01",
+        "action": "block",
+        "evidence": {
+          "n": 81,
+          "surplus_per_tranche": -3.540917,
+          "first_winner_rate": 0.432099
+        }
+      },
+      {
+        "name": "very_low_first_price",
+        "condition": "intended_first_price < 0.40",
+        "action": "clip_down_unless_strong_l2_edge",
+        "evidence": {
+          "n": 174,
+          "first_winner_rate": 0.258621,
+          "surplus_per_tranche": 1.670594
+        },
+        "warning": "Low first price is a poor winner proxy even if absolute surplus is not negative."
+      }
+    ]
+  },
+  "continuation_shadow_gate_after_30s": {
+    "intent": "decide whether an uncovered tranche may keep waiting after 30s",
+    "allow_slow_path": [
+      {
+        "name": "cheap_window_strong",
+        "condition": "min_pair_cost_seen_in_first_30s <= 0.90",
+        "evidence": {
+          "n": 1314,
+          "first_winner_rate": 0.726027,
+          "slow_profit_rate": 0.194064,
+          "slow_bad_rate": 0.024353,
+          "surplus_per_size": 0.095495,
+          "surplus_per_tranche": 10.083721
+        }
+      },
+      {
+        "name": "cheap_window_medium",
+        "condition": "0.90 < min_pair_cost_seen_in_first_30s <= 0.95",
+        "evidence": {
+          "n": 917,
+          "first_winner_rate": 0.663032,
+          "slow_profit_rate": 0.124318,
+          "slow_bad_rate": 0.069793,
+          "surplus_per_size": 0.032382,
+          "surplus_per_tranche": 3.472745
+        }
+      }
+    ],
+    "force_repair": [
+      {
+        "name": "no_cheap_window",
+        "condition": "min_pair_cost_seen_in_first_30s > 1.01",
+        "evidence": {
+          "n": 417,
+          "first_winner_rate": 0.513189,
+          "slow_profit_rate": 0.021583,
+          "slow_bad_rate": 0.091127,
+          "surplus_per_tranche": -8.528676
+        }
+      },
+      {
+        "name": "weak_window_only",
+        "condition": "0.99 < min_pair_cost_seen_in_first_30s <= 1.01",
+        "evidence": {
+          "n": 666,
+          "first_winner_rate": 0.578078,
+          "slow_profit_rate": 0.040541,
+          "slow_bad_rate": 0.094595,
+          "surplus_per_tranche": -2.979547
+        }
+      }
+    ]
+  },
+  "hard_warnings": [
+    "This config is for shadow research only and must not be enforced live without separate validation.",
+    "winner_side is ex-post truth and must never be used in live gate logic.",
+    "High first price >=0.70 is a strong first-winner proxy but not a strong profit proxy; use it for risk interpretation, not blind up-clipping.",
+    "Large-size positive buckets are ranked by both surplus_per_tranche and surplus_per_size to avoid size-driven false positives."
+  ]
+}

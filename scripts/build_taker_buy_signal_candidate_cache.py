@@ -24,6 +24,7 @@ TRUSTED_START_MS = int(dt.datetime(2026, 4, 27, 7, 25, tzinfo=dt.timezone.utc).t
 OUTAGE_START_MS = int(dt.datetime(2026, 4, 28, 11, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
 OUTAGE_END_MS = int(dt.datetime(2026, 4, 28, 12, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
 PAIR_CEILINGS = (0.94, 0.95, 0.96, 0.98)
+MAX_L1_AGE_MS = 3_000
 
 
 def ro_connect(path: Path) -> sqlite3.Connection:
@@ -136,6 +137,56 @@ def book_at(l1_by_sec: dict[int, dict[str, Any]], ts_ms: int) -> dict[str, Any] 
         if book is not None:
             return book
     return None
+
+
+def load_l1_books(conn: sqlite3.Connection, condition_id: str, start_ms: int, end_ms: int) -> tuple[list[int], list[dict[str, Any]]]:
+    rows = conn.execute(
+        """
+        SELECT recv_ms, yes_bid_px, yes_ask_px, no_bid_px, no_ask_px,
+               yes_bid_sz, yes_ask_sz, no_bid_sz, no_ask_sz
+        FROM md_book_l1
+        WHERE condition_id = ? AND recv_ms >= ? AND recv_ms <= ?
+        ORDER BY recv_ms, capture_seq
+        """,
+        (condition_id, start_ms, end_ms),
+    )
+    times: list[int] = []
+    books: list[dict[str, Any]] = []
+    for row in rows:
+        times.append(int(row["recv_ms"]))
+        books.append(
+            {
+                "recv_ms": int(row["recv_ms"]),
+                "YES": {
+                    "bid": row["yes_bid_px"],
+                    "ask": row["yes_ask_px"],
+                    "bid_sz": row["yes_bid_sz"],
+                    "ask_sz": row["yes_ask_sz"],
+                },
+                "NO": {
+                    "bid": row["no_bid_px"],
+                    "ask": row["no_ask_px"],
+                    "bid_sz": row["no_bid_sz"],
+                    "ask_sz": row["no_ask_sz"],
+                },
+            }
+        )
+    return times, books
+
+
+def strict_book_at_or_before(
+    times: list[int],
+    books: list[dict[str, Any]],
+    ts_ms: int,
+    max_age_ms: int = MAX_L1_AGE_MS,
+) -> dict[str, Any] | None:
+    idx = bisect.bisect_right(times, ts_ms) - 1
+    if idx < 0:
+        return None
+    age_ms = ts_ms - int(times[idx])
+    if age_ms < 0 or age_ms > max_age_ms:
+        return None
+    return books[idx]
 
 
 def mid(book: dict[str, Any], side: str) -> float | None:
@@ -363,17 +414,20 @@ def market_candidates(
     start_ms = int(market["start_ms"])
     end_ms = int(market["end_ms"])
     l1_by_sec = load_l1_by_second(conn, condition_id, max(start_ms, TRUSTED_START_MS) - 2_000, end_ms)
+    l1_times, l1_books = load_l1_books(conn, condition_id, max(start_ms, TRUSTED_START_MS) - MAX_L1_AGE_MS, end_ms)
     l2_cache: dict[str, tuple[list[int], list[list[tuple[float, float]]]]] = {}
     rows = []
     for trade in trades:
         ts_ms = int(trade["trade_ts_ms"])
         side = str(trade["market_side"])
-        book = book_at(l1_by_sec, ts_ms)
-        if book is None:
+        strict_book = strict_book_at_or_before(l1_times, l1_books, ts_ms)
+        if strict_book is None:
             continue
-        high = high_side(book)
+        high = high_side(strict_book)
         if high is None:
             continue
+        legacy_book = book_at(l1_by_sec, ts_ms)
+        legacy_high = high_side(legacy_book) if legacy_book is not None else None
         if side not in l2_cache:
             if day_l2 is not None:
                 l2_cache[side] = day_l2.get((condition_id, side), ([], []))
@@ -402,9 +456,13 @@ def market_candidates(
                     min(end_ms, start_ms + (args.max_offset_s + args.completion_s) * 1000),
                 )
         opp_times, opp_books = l2_cache[opp]
-        opp_ask = book[opp]["ask"]
+        opp_ask = strict_book[opp]["ask"]
         if opp_ask is None:
             continue
+        strict_pair = first_vwap + float(opp_ask)
+        legacy_opp_ask = legacy_book[opp]["ask"] if legacy_book is not None else None
+        legacy_pair = first_vwap + float(legacy_opp_ask) if legacy_opp_ask is not None else None
+        strict_alignment = "high" if side == high else "low"
         completion = completion_scan(opp_times, opp_books, ts_ms, min(end_ms, ts_ms + args.completion_s * 1000), first_vwap, args.clip)
         rows.append(
             {
@@ -416,7 +474,7 @@ def market_candidates(
                 "trigger_iso": iso_ms(ts_ms),
                 "offset_s": round((ts_ms - start_ms) / 1000.0, 3),
                 "first_side": side,
-                "side_alignment": "high" if side == high else "low",
+                "side_alignment": strict_alignment,
                 "first_is_winner": side == market["winner_side"],
                 "public_trade_price": safe_round(float(trade["price"])),
                 "public_trade_size": safe_round(float(trade["size"])),
@@ -426,7 +484,13 @@ def market_candidates(
                 "first_l2_worst_px": safe_round(first_worst),
                 "first_l2_filled": safe_round(first_filled),
                 "opp_l1_ask": safe_round(float(opp_ask)),
-                "l1_immediate_pair": safe_round(first_vwap + float(opp_ask)),
+                "l1_immediate_pair": safe_round(strict_pair),
+                "strict_l1_recv_ms": int(strict_book["recv_ms"]),
+                "strict_l1_age_ms": ts_ms - int(strict_book["recv_ms"]),
+                "strict_side_alignment": strict_alignment,
+                "strict_l1_immediate_pair": safe_round(strict_pair),
+                "cache_side_alignment_old": None if legacy_high is None else ("high" if side == legacy_high else "low"),
+                "cache_l1_pair_old": safe_round(legacy_pair),
                 **completion,
             }
         )

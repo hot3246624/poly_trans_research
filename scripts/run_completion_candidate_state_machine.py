@@ -59,6 +59,27 @@ class MarketState:
     active: bool = False
 
 
+@dataclass(frozen=True)
+class SizingOverride:
+    override_id: str
+    target_qty: float | None
+    max_open_cost: float | None
+    enabled: bool
+    source_row_number: int
+    source_key_type: str
+    source_key: str
+
+
+@dataclass(frozen=True)
+class EffectiveSizing:
+    target_qty: float
+    max_open_cost: float
+    override_id: str | None
+    override_key_type: str | None
+    override_key: str | None
+    enabled: bool
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -116,6 +137,9 @@ def infer_duckdb_type(field: str, rows: list[dict[str, Any]]) -> str:
         "candidate_reason",
         "blocked_by",
         "decision_scope",
+        "sizing_override_id",
+        "sizing_override_key_type",
+        "sizing_override_key",
     }
     if field in force_text or field.endswith("_id") and field != "action_id":
         return "VARCHAR"
@@ -153,6 +177,24 @@ def create_table_from_rows(
     conn.executemany(insert_sql, [tuple(row.get(field) for field, _ in columns) for row in rows])
 
 
+def create_table_from_csv(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    csv_path: Path,
+    rows: list[dict[str, Any]],
+    fieldnames: list[str],
+) -> None:
+    columns = [(field, infer_duckdb_type(field, rows)) for field in fieldnames]
+    column_sql = ", ".join(f"{quote_ident(field)} {duckdb_type}" for field, duckdb_type in columns)
+    conn.execute(f"CREATE TABLE {quote_ident(table)} ({column_sql})")
+    if not rows:
+        return
+    conn.execute(
+        f"COPY {quote_ident(table)} FROM {quote_literal(csv_path)} "
+        "(HEADER TRUE, DELIMITER ',', QUOTE '\"', ESCAPE '\"')"
+    )
+
+
 def iso_ms(ms: int) -> str:
     return dt.datetime.fromtimestamp(ms / 1000, tz=dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -169,6 +211,122 @@ def as_float(value: Any, default: float = math.nan) -> float:
 
 def pct(num: float, den: float) -> float:
     return round(num / den, 6) if abs(den) > DUST else 0.0
+
+
+def parse_optional_positive_float(value: Any, field: str, row_number: int) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be numeric at sizing override row {row_number}") from exc
+    if not math.isfinite(out) or out <= 0:
+        raise ValueError(f"{field} must be positive at sizing override row {row_number}")
+    return out
+
+
+def parse_optional_bool(value: Any, field: str, row_number: int, default: bool = True) -> bool:
+    if value in (None, ""):
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    raise ValueError(f"{field} must be boolean at sizing override row {row_number}")
+
+
+def load_sizing_overrides_csv(path: Path | None) -> dict[str, SizingOverride]:
+    if path is None:
+        return {}
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"missing sizing overrides CSV: {resolved}")
+    overrides: dict[str, SizingOverride] = {}
+    with resolved.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"empty sizing overrides CSV: {resolved}")
+        supported_key_fields = ("candidate_row_id", "condition_id", "slug")
+        missing_keys = [field for field in supported_key_fields if field not in reader.fieldnames]
+        if len(missing_keys) == len(supported_key_fields):
+            raise ValueError(
+                "sizing overrides CSV must include at least one of candidate_row_id, condition_id, slug"
+            )
+        for row_number, row in enumerate(reader, start=2):
+            target_qty = parse_optional_positive_float(row.get("target_qty"), "target_qty", row_number)
+            max_open_cost = parse_optional_positive_float(row.get("max_open_cost"), "max_open_cost", row_number)
+            enabled = parse_optional_bool(row.get("enabled"), "enabled", row_number, default=True)
+            if enabled and target_qty is None and max_open_cost is None:
+                raise ValueError(
+                    f"sizing override row {row_number} must set target_qty or max_open_cost when enabled=true"
+                )
+            override_id = (
+                row.get("sizing_override_id")
+                or row.get("override_id")
+                or row.get("schedule_id")
+                or f"override_row_{row_number}"
+            )
+            override_id = str(override_id).strip()
+            if not override_id:
+                raise ValueError(f"sizing override row {row_number} has blank override id")
+            key_values = [
+                (field, str(row.get(field) or "").strip())
+                for field in supported_key_fields
+                if field in row and str(row.get(field) or "").strip()
+            ]
+            if not key_values:
+                raise ValueError(
+                    f"sizing override row {row_number} must populate candidate_row_id, condition_id, or slug"
+                )
+            for key_type, key_value in key_values:
+                lookup_key = f"{key_type}:{key_value}"
+                if lookup_key in overrides:
+                    raise ValueError(f"duplicate sizing override key {lookup_key} at row {row_number}")
+                overrides[lookup_key] = SizingOverride(
+                    override_id=override_id,
+                    target_qty=target_qty,
+                    max_open_cost=max_open_cost,
+                    enabled=enabled,
+                    source_row_number=row_number,
+                    source_key_type=key_type,
+                    source_key=key_value,
+                )
+    return overrides
+
+
+def resolve_sizing_override(row: dict[str, Any], overrides: dict[str, SizingOverride]) -> SizingOverride | None:
+    if not overrides:
+        return None
+    for key_type in ("candidate_row_id", "condition_id", "slug"):
+        value = row.get(key_type)
+        if value in (None, ""):
+            continue
+        item = overrides.get(f"{key_type}:{value}")
+        if item is not None:
+            return item
+    return None
+
+
+def effective_sizing_for_row(args: argparse.Namespace, row: dict[str, Any]) -> EffectiveSizing:
+    override = resolve_sizing_override(row, getattr(args, "sizing_overrides", {}))
+    if override is None:
+        return EffectiveSizing(
+            target_qty=float(args.target_qty),
+            max_open_cost=float(args.max_open_cost),
+            override_id=None,
+            override_key_type=None,
+            override_key=None,
+            enabled=True,
+        )
+    return EffectiveSizing(
+        target_qty=float(override.target_qty if override.target_qty is not None else args.target_qty),
+        max_open_cost=float(override.max_open_cost if override.max_open_cost is not None else args.max_open_cost),
+        override_id=override.override_id,
+        override_key_type=override.source_key_type,
+        override_key=override.source_key,
+        enabled=override.enabled,
+    )
 
 
 def official_clob_taker_fee(shares: float, price: float, fee_rate: float) -> float:
@@ -240,6 +398,14 @@ def stable_id(*parts: Any, length: int = 20) -> str:
         h.update(str(part).encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()[:length]
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def other(side: str) -> str:
@@ -421,6 +587,8 @@ def finish_metrics(metrics: defaultdict[str, float], action_rows: list[dict[str,
         "seed_block_imbalance_qty": int(metrics["seed_block_imbalance_qty"]),
         "seed_block_imbalance_cost": int(metrics["seed_block_imbalance_cost"]),
         "seed_block_residual_cooldown": int(metrics["seed_block_residual_cooldown"]),
+        "seed_block_sizing_override_disabled": int(metrics["seed_block_sizing_override_disabled"]),
+        "sizing_override_match_rows": int(metrics["sizing_override_match_rows"]),
         "seed_px_distribution": summarize([as_float(row.get("seed_px")) for row in action_rows]),
         "offset_s_distribution": summarize([as_float(row.get("offset_s")) for row in action_rows]),
     }
@@ -498,6 +666,8 @@ def run_passive_redeem(
         f"_imb{int(round(args.imbalance_qty_cap * 100)):03d}"
         f"_rc{int(round(args.residual_cooldown_age_s)):02d}_{int(round(args.residual_cooldown_cost_cap * 100)):03d}"
     )
+    if getattr(args, "sizing_overrides_sha256", None):
+        config_name += f"_szov{str(args.sizing_overrides_sha256)[:8]}"
     action_id = 0
     candidate_base_manifest = candidate_base_dir(args.candidate_base_dir) / "CANDIDATE_BASE_MANIFEST.json"
 
@@ -546,6 +716,12 @@ def run_passive_redeem(
             if math.isnan(l1_pair) or l1_pair > args.seed_l1_pair_cap + 1e-12:
                 metrics["seed_block_l1_pair_cap"] += 1
                 continue
+            effective_sizing = effective_sizing_for_row(args, row)
+            if effective_sizing.override_id is not None:
+                metrics["sizing_override_match_rows"] += 1
+            if not effective_sizing.enabled:
+                metrics["seed_block_sizing_override_disabled"] += 1
+                continue
             if ts_ms - state.last_seed_ts_ms < int(args.cooldown_s * 1000):
                 metrics["seed_block_cooldown"] += 1
                 continue
@@ -559,7 +735,7 @@ def run_passive_redeem(
             if aged_cost > args.residual_cooldown_cost_cap + 1e-12 and same_qty + args.dust_qty >= opp_qty:
                 metrics["seed_block_residual_cooldown"] += 1
                 continue
-            if same_qty >= args.target_qty - args.dust_qty:
+            if same_qty >= effective_sizing.target_qty - args.dust_qty:
                 metrics["seed_block_target"] += 1
                 continue
             same_cost = lot_cost(inv[side])
@@ -576,8 +752,8 @@ def run_passive_redeem(
             qty = min(
                 args.max_seed_qty,
                 trade_size * args.fill_haircut,
-                args.target_qty - same_qty,
-                (args.max_open_cost - open_cost) / max(seed_px, 1e-9),
+                effective_sizing.target_qty - same_qty,
+                (effective_sizing.max_open_cost - open_cost) / max(seed_px, 1e-9),
                 imbalance_room,
             )
             if qty <= args.dust_qty:
@@ -634,6 +810,11 @@ def run_passive_redeem(
                     "seed_px": round(seed_px, 6),
                     "seed_qty": round(qty, 6),
                     "seed_cost": round(qty * seed_px, 6),
+                    "target_qty_effective": round(effective_sizing.target_qty, 6),
+                    "max_open_cost_effective": round(effective_sizing.max_open_cost, 6),
+                    "sizing_override_id": effective_sizing.override_id,
+                    "sizing_override_key_type": effective_sizing.override_key_type,
+                    "sizing_override_key": effective_sizing.override_key,
                     "fee_model": args.fee_model,
                     "official_taker_fee": round(fee, 6) if args.fee_model == "official_taker" else 0.0,
                     "fee": round(fee, 6),
@@ -889,6 +1070,15 @@ def main() -> int:
     parser.add_argument("--mode", choices=["passive_redeem"], default="passive_redeem")
     parser.add_argument("--edge", type=float, default=0.055)
     parser.add_argument("--target-qty", type=float, default=5.0)
+    parser.add_argument(
+        "--sizing-overrides-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CSV keyed by condition_id, slug, or candidate_row_id with target_qty/max_open_cost overrides. "
+            "Used for review-only replay of public-profile sizing schedules."
+        ),
+    )
     parser.add_argument("--alignment", choices=["all", "high", "low"], default="all")
     parser.add_argument("--seed-px-lo", type=float, default=0.05)
     parser.add_argument("--seed-px-hi", type=float, default=0.90)
@@ -922,6 +1112,17 @@ def main() -> int:
         args.official_fee_rate = 0.0
     if args.flat_notional_fee_rate < 0:
         raise SystemExit("--flat-notional-fee-rate must be non-negative")
+    if args.target_qty <= 0:
+        raise SystemExit("--target-qty must be positive")
+    if args.max_open_cost <= 0:
+        raise SystemExit("--max-open-cost must be positive")
+    args.sizing_overrides = load_sizing_overrides_csv(args.sizing_overrides_csv)
+    args.sizing_overrides_key_count = len(args.sizing_overrides)
+    if args.sizing_overrides_csv is not None:
+        args.sizing_overrides_csv = args.sizing_overrides_csv.expanduser().resolve()
+        args.sizing_overrides_sha256 = sha256_file(args.sizing_overrides_csv)
+    else:
+        args.sizing_overrides_sha256 = None
 
     started = time.perf_counter()
     base_dir = args.candidate_base_dir.expanduser().resolve()
@@ -965,6 +1166,11 @@ def main() -> int:
         "seed_px",
         "seed_qty",
         "seed_cost",
+        "target_qty_effective",
+        "max_open_cost_effective",
+        "sizing_override_id",
+        "sizing_override_key_type",
+        "sizing_override_key",
         "fee_model",
         "official_taker_fee",
         "fee",
@@ -1027,10 +1233,10 @@ def main() -> int:
 
     output_db = out_dir / "state_machine_results.duckdb"
     conn = duckdb.connect(str(output_db))
-    create_table_from_rows(conn, "actions", actions, action_fields)
-    create_table_from_rows(conn, "summary_by_day", daily_rows, daily_fields)
-    create_table_from_rows(conn, "candidate_registry", actions, action_fields)
-    create_table_from_rows(conn, "residual_lots", residual_rows, residual_fields)
+    create_table_from_csv(conn, "actions", actions_csv, actions, action_fields)
+    create_table_from_csv(conn, "summary_by_day", summary_csv, daily_rows, daily_fields)
+    create_table_from_csv(conn, "candidate_registry", registry_csv, actions, action_fields)
+    create_table_from_csv(conn, "residual_lots", residual_csv, residual_rows, residual_fields)
     conn.execute(f"COPY actions TO {quote_literal(out_dir / 'actions.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
     conn.execute(f"COPY summary_by_day TO {quote_literal(out_dir / 'summary_by_day.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
     conn.execute(f"COPY candidate_registry TO {quote_literal(out_dir / 'candidate_registry.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)")
@@ -1061,6 +1267,10 @@ def main() -> int:
         "mode": args.mode,
         "edge": args.edge,
         "target_qty": args.target_qty,
+        "sizing_overrides_csv": str(args.sizing_overrides_csv) if args.sizing_overrides_csv else None,
+        "sizing_overrides_sha256": args.sizing_overrides_sha256,
+        "sizing_overrides_key_count": args.sizing_overrides_key_count,
+        "sizing_override_key_priority": ["candidate_row_id", "condition_id", "slug"],
         "alignment": args.alignment,
         "seed_px_lo": args.seed_px_lo,
         "seed_px_hi": args.seed_px_hi,

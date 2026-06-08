@@ -118,6 +118,9 @@ def is_btc_5m_buy(row: dict[str, Any], start_s: int | None, end_s: int | None) -
 
 
 def outcome_side(row: dict[str, Any]) -> str:
+    direct = row.get("outcomeSide") or row.get("outcome_side") or row.get("market_side")
+    if direct in {"YES", "NO"}:
+        return str(direct)
     return "YES" if int(row["outcomeIndex"]) == 0 else "NO"
 
 
@@ -140,7 +143,7 @@ def normalized_trade(row: dict[str, Any]) -> dict[str, Any]:
         "title": row.get("title"),
         "outcome": row.get("outcome"),
         "market_side": outcome_side(row),
-        "outcome_index": int(row["outcomeIndex"]),
+        "outcome_index": int(row["outcomeIndex"]) if row.get("outcomeIndex") is not None else (0 if outcome_side(row) == "YES" else 1),
         "price": price,
         "size": size,
         "usdc": float(row.get("usdcSize", price * size)),
