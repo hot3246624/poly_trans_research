@@ -82,6 +82,10 @@ DEFAULT_REAL_NO_ORDER_SHADOW_START_SCOPE_EVAL = (
     DEFAULT_CONTRACT
     / "xuan_same_window_no_order_shadow_real_ws_start_scope_eval_latest/XUAN_SAME_WINDOW_NO_ORDER_SHADOW_EVAL.json"
 )
+DEFAULT_OBSERVABLE_MICROSTRUCTURE_EVAL = (
+    DEFAULT_CONTRACT
+    / "observable_microstructure_adapter_v1_latest/OBSERVABLE_MICROSTRUCTURE_ADAPTER_V1_EVAL.json"
+)
 
 REAL_NO_ORDER_SHADOW_MIN_ROWS_FOR_RESEARCH_EVIDENCE = 100
 REAL_NO_ORDER_SHADOW_MIN_CANDIDATES_FOR_RESEARCH_EVIDENCE = 25
@@ -97,6 +101,9 @@ SAME_WINDOW_REAL_WS_NO_ORDER_SHADOW_PASS_STATUS = (
 )
 SAME_WINDOW_REAL_WS_NO_ORDER_SHADOW_START_SCOPE_STATUS = (
     "KEEP_XUAN_SAME_WINDOW_REAL_WS_START_SCOPE_VALIDATED_APPROVAL_REQUIRED"
+)
+OBSERVABLE_MICROSTRUCTURE_PASS_STATUS = (
+    "OK_RESEARCH_OBSERVABLE_MICROSTRUCTURE_READY_PROMOTION_BLOCKED_PRIVATE_TRUTH"
 )
 LEGACY_REAL_NO_ORDER_SHADOW_PASS_STATUS = (
     "KEEP_XUAN_SAME_WINDOW_PUBLIC_BOOK_NO_ORDER_SHADOW_EVALUATED_PROMOTION_BLOCKED_OWNER_TRUTH"
@@ -163,6 +170,11 @@ def main() -> int:
         default=DEFAULT_REAL_NO_ORDER_SHADOW_START_SCOPE_EVAL,
     )
     parser.add_argument(
+        "--observable-microstructure-eval",
+        type=Path,
+        default=DEFAULT_OBSERVABLE_MICROSTRUCTURE_EVAL,
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_CONTRACT / "xuan_backtest_v1_strategy_readiness_latest",
@@ -200,6 +212,7 @@ def main() -> int:
     real_no_order_shadow_start_scope_eval = read_json(
         args.real_no_order_shadow_start_scope_eval.expanduser()
     )
+    observable_microstructure_eval = read_json(args.observable_microstructure_eval.expanduser())
 
     install_summary = install.get("summary") or {}
     bridge_summary = xuan_bridge.get("summary") or {}
@@ -358,6 +371,16 @@ def main() -> int:
         and real_no_order_shadow_start_scope_promotion_gate.get("strategy_promotion_ready") is False
         and real_no_order_shadow_start_scope_promotion_gate.get("live_orders_allowed") is False
     )
+    observable_microstructure_summary = observable_microstructure_eval.get("summary") or {}
+    observable_microstructure_ready = (
+        observable_microstructure_eval.get("status") == OBSERVABLE_MICROSTRUCTURE_PASS_STATUS
+        and observable_microstructure_eval.get("evaluation_passed") is True
+        and observable_microstructure_eval.get("research_observable_microstructure_ready") is True
+        and observable_microstructure_eval.get("private_truth_ready") is False
+        and observable_microstructure_eval.get("strategy_promotion_ready") is False
+        and observable_microstructure_eval.get("live_orders_allowed") is False
+        and observable_microstructure_eval.get("deployable") is False
+    )
     no_order_shadow_eval_contract_passed = (
         btc_tiny_canary_no_order_shadow_eval_passed or real_no_order_shadow_contract_passed
     )
@@ -423,6 +446,11 @@ def main() -> int:
             warnings.append("real_no_order_shadow_start_scope_not_validated")
     else:
         warnings.append("real_no_order_shadow_start_scope_eval_not_present")
+    if observable_microstructure_eval:
+        if not observable_microstructure_ready:
+            warnings.append("observable_microstructure_adapter_not_ready")
+    else:
+        warnings.append("observable_microstructure_adapter_eval_not_present")
     if not private_truth_ready:
         warnings.append("historical_owner_private_truth_unavailable")
 
@@ -535,6 +563,7 @@ def main() -> int:
         "real_no_order_shadow_contract_passed": real_no_order_shadow_contract_passed,
         "real_no_order_shadow_sample_sufficient": real_no_order_shadow_sample_sufficient,
         "real_no_order_shadow_start_scope_validated": real_no_order_shadow_start_scope_validated,
+        "observable_microstructure_ready": observable_microstructure_ready,
         "private_truth_ready": private_truth_ready,
         "private_promotion_ready_count": 0,
         "strategy_research_ready": strategy_research_ready,
@@ -708,6 +737,43 @@ def main() -> int:
                     "Sample sufficiency is a separate research-evidence floor and still cannot set promotion/private truth."
                 ),
             },
+            "observable_microstructure_adapter": {
+                "ready": observable_microstructure_ready,
+                "requires_private_truth": False,
+                "review_only": True,
+                "required_before_canary_or_promotion_discussion": True,
+                "observed": {
+                    "status": observable_microstructure_eval.get("status") or "MISSING",
+                    "markets_discovered": observable_microstructure_summary.get("markets_discovered"),
+                    "markets_with_both_tokens_first120": observable_microstructure_summary.get(
+                        "markets_with_both_tokens_first120"
+                    ),
+                    "intent_market_coverage_over_discovered": observable_microstructure_summary.get(
+                        "intent_market_coverage_over_discovered"
+                    ),
+                    "filled_market_coverage_over_discovered": observable_microstructure_summary.get(
+                        "filled_market_coverage_over_discovered"
+                    ),
+                    "market_fill_retention": observable_microstructure_summary.get("market_fill_retention"),
+                    "qty_fill_conversion": observable_microstructure_summary.get("qty_fill_conversion"),
+                    "avg_pair_cost_proxy": observable_microstructure_summary.get("avg_pair_cost_proxy"),
+                    "residual_qty_proxy": observable_microstructure_summary.get("residual_qty_proxy"),
+                    "fee_after_pnl_proxy": observable_microstructure_summary.get("fee_after_pnl_proxy"),
+                    "threshold_failure_count": observable_microstructure_summary.get("threshold_failure_count"),
+                    "failed_thresholds": observable_microstructure_summary.get("failed_thresholds") or [],
+                },
+                "requirements": {
+                    "public_orderbook_observable_gate_passed": observable_microstructure_ready,
+                    "private_truth_ready": False,
+                    "strategy_promotion_ready": False,
+                    "live_orders_allowed": False,
+                    "deployable": False,
+                },
+                "allowed_scope": (
+                    "Review-only public CLOB book microstructure/fillability gate. "
+                    "It can block canary/promotion discussion but cannot set owner private truth or live readiness."
+                ),
+            },
             "strategy_promotion_ready": {
                 "ready": strategy_promotion_ready,
                 "requires_private_truth": True,
@@ -787,6 +853,9 @@ def main() -> int:
             or "MISSING",
             "real_no_order_shadow_start_scope_validated": real_no_order_shadow_start_scope_validated,
             "real_no_order_shadow_start_scope_eval_summary": real_no_order_shadow_start_scope_summary,
+            "observable_microstructure_eval_status": observable_microstructure_eval.get("status") or "MISSING",
+            "observable_microstructure_ready": observable_microstructure_ready,
+            "observable_microstructure_eval_summary": observable_microstructure_summary,
         },
         "blockers": blockers,
         "warnings": warnings,
@@ -798,6 +867,8 @@ def main() -> int:
             "redeem_is_settlement_action_not_strategy_edge": True,
             "historical_shadow_private_truth_can_be_inferred": False,
             "historical_public_or_shadow_can_set_private_truth_ready": False,
+            "public_orderbook_observable_adapter_can_set_private_truth_ready": False,
+            "observable_microstructure_required_before_canary_or_promotion_discussion": True,
             "promotion_requires_future_owner_execution_truth": True,
             "candidate_handoff_flow": [
                 "search-safe candidate",
@@ -840,6 +911,7 @@ def main() -> int:
             "real_no_order_shadow_start_scope_eval": str(
                 args.real_no_order_shadow_start_scope_eval.expanduser()
             ),
+            "observable_microstructure_eval": str(args.observable_microstructure_eval.expanduser()),
         },
     }
     manifest_path = output_dir / "XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json"

@@ -75,6 +75,7 @@ EXPECTED_RUNNERS = (
     "scripts/build_btc_v1_old_baseline_overlap_decomposition.py",
     "scripts/build_btc_same_window_canary_preflight.py",
     "scripts/evaluate_xuan_btc_tiny_canary_no_order_shadow.py",
+    "scripts/evaluate_observable_microstructure_adapter_v1.py",
     "scripts/build_multiasset_strict_rescue_opportunity_report.py",
     "scripts/build_multiasset_merge_turnover_report.py",
     "scripts/build_multiasset_backtest_coverage_scorecard.py",

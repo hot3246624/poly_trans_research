@@ -1,6 +1,8 @@
-# Xuan Backtest V1 Usage Guide
+# Backtest V1 回测使用说明
 
-这份文档是给接手同事的日常使用入口。完整背景见：
+这份文档面向需要在本机运行 Backtest V1、复现多币种回测结果、查看候选、读取资金账本和判断 gate 状态的同事。它是日常回测使用入口，不是架构交接文档，也不是 live/promotion 操作手册。
+
+架构背景和维护细节见：
 
 ```text
 docs/BACKTEST_ARCHITECTURE_V1_RUNBOOK_ZH.md
@@ -28,7 +30,7 @@ promotion/deploy/live-order ready
 
 ```text
 local install gate: OK
-xuan strategy readiness: PARTIAL_XUAN_BACKTEST_V1_SHADOW_DESIGN_READY_PROMOTION_BLOCKED_OWNER_TRUTH
+xuan strategy readiness: KEEP_XUAN_BACKTEST_V1_REAL_NO_ORDER_SHADOW_SAMPLE_SUFFICIENT_PROMOTION_BLOCKED_OWNER_TRUTH
 strategy_research_ready=true
 shadow_design_ready=true
 shadow_start_ready=false
@@ -40,6 +42,29 @@ BTC parity: BLOCKED_BTC_BASELINE_PARITY_NOT_PROVEN
 ```
 
 BTC parity 仍阻塞是正确行为。主要原因是旧 BTC baseline 与新 BTC normalized adapter 的 source/taker-side 语义没有证明等价，且历史 shadow/no-order 没有 owner private truth。
+
+最新一次 no-submit strict local install gate 已在 2026-06-19 通过：
+
+```text
+packet=imx040_backtest_v1_local_install_gate_packet_no_submit
+status=KEEP_IMX040_BACKTEST_V1_LOCAL_INSTALL_GATE_PASS_NO_SUBMIT
+raw_status=OK
+fail_count=0
+warn_count=0
+search_safe_row_count=4,655,442
+canonical_audit_selected_candidate_count=80
+compat_audit_selected_candidate_count=6
+external_polydata_runtime_ref_count=0
+result_sha256=fed79de13885370c952e1563706abf2d19da8452749c5f21efaf32f10d9a448e
+```
+
+结果文件：
+
+```text
+/Users/hot/web3Scientist/pm_IM_xuan_research/xuan_research_artifacts/imx040_backtest_v1_local_install_gate_packet_no_submit_20260619T012308695455Z/IMX040_BACKTEST_V1_LOCAL_INSTALL_GATE_PACKET_NO_SUBMIT_RESULT.json
+```
+
+注意：这次 strict gate 通过的前提之一是 `scripts/evaluate_observable_microstructure_adapter_v1.py` 已纳入 git index。当前只做了 `git add`，尚未 commit/push；需要交付代码时必须补 commit/push。
 
 ## 2. 环境
 
@@ -72,6 +97,13 @@ warn_count=0
 external_polydata_runtime_ref_count=0
 canonical_audit_selected_candidate_count=80
 compat_audit_selected_candidate_count=6
+```
+
+如果要引用最新已审计 packet，而不是现场重跑 validator，看：
+
+```bash
+jq '{status, verdict, decision, gate, forbidden, next_useful_work}' \
+  /Users/hot/web3Scientist/pm_IM_xuan_research/xuan_research_artifacts/imx040_backtest_v1_local_install_gate_packet_no_submit_20260619T012308695455Z/IMX040_BACKTEST_V1_LOCAL_INSTALL_GATE_PACKET_NO_SUBMIT_RESULT.json
 ```
 
 `canonical_audit_selected_candidate_count=80` 是当前主入口。`compat_audit_selected_candidate_count=6` 是旧 search-safe 兼容产物，不作为默认入口。
@@ -397,6 +429,27 @@ live_orders_allowed=false
 ```
 
 当前真实 WS 包已通过 strict gate 且达到研究证据样本底线：292 rows、52 candidates、11 markets、33 列主 CSV、`book_transport=WS`、`book_ws_used=true`、`threshold_failure_count=0`。这只证明 public CLOB WS book/latency/fillability proxy 合约通过；`private_truth_ready`、`strategy_promotion_ready`、`live_orders_allowed`、`deployable` 必须继续为 false。
+
+微结构可成交性需要单独看 `observable_microstructure_adapter_v1`。它消费策略侧 no-submit public/orderbook collector contract 和 run packet，检查 first-120s 双 token book 覆盖、intent/fill coverage、market fill retention、qty conversion、pair cost proxy、residual proxy 和 fee-after PnL proxy。默认命令：
+
+```bash
+uv run python scripts/evaluate_observable_microstructure_adapter_v1.py
+
+jq '{status, evaluation_passed, summary, policy}' \
+  $POLY_BT_ROOT/derived/contract_examples/observable_microstructure_adapter_v1_latest/OBSERVABLE_MICROSTRUCTURE_ADAPTER_V1_EVAL.json
+```
+
+当前 v3 no-submit public/orderbook 包缺独立全市场 `book_snapshot_csv` / `book_touch_candidate_csv`，且真实可触达指标明显不足，所以正确状态应是：
+
+```text
+status=BLOCKED_OBSERVABLE_MICROSTRUCTURE_ADAPTER_V1_FAIL_CLOSED
+private_truth_ready=false
+strategy_promotion_ready=false
+live_orders_allowed=false
+deployable=false
+```
+
+这个 gate 是 canary/promotion 讨论前的公开盘口可成交性证据底线；即使未来通过，也只能表示 `research_observable_microstructure_ready=true`，不能证明 owner order acceptance、真实成交、真实 fee、inventory/redeem 或 private truth。详细说明见 [BACKTEST_V1_OBSERVABLE_MICROSTRUCTURE_ADAPTER_ZH.md](/Users/hot/web3Scientist/poly_trans_research/docs/BACKTEST_V1_OBSERVABLE_MICROSTRUCTURE_ADAPTER_ZH.md)。
 
 BTC `[1,2,3]` start authorization 必须单独看 start-scope artifact：
 
