@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from trade_analysis import (
     parse_trades,
     resolve_market_identifier,
 )
+from interactive_chart import generate_html_table
 
 
 class LegacyTradeAnalysisTests(unittest.TestCase):
@@ -58,6 +60,8 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(summary["no_net_spent"], 1.7)
         self.assertAlmostEqual(summary["no_avg_cost"], 0.30)
         self.assertAlmostEqual(summary["total_net_spent"], 3.3)
+        self.assertAlmostEqual(summary["total_buy_cost"], 5.8)
+        self.assertAlmostEqual(summary["total_fee"], 0.0)
         self.assertAlmostEqual(summary["realized_pnl"], 0.6)
         self.assertAlmostEqual(summary["locked_profit"], 1.7)
 
@@ -67,8 +71,100 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
 
         table_summary = calculate_summary(calculate_table_metrics(parsed))
         self.assertAlmostEqual(table_summary["total_spent"], 3.3)
+        self.assertAlmostEqual(table_summary["total_invested"], 5.8)
+        self.assertAlmostEqual(table_summary["total_fee"], 0.0)
         self.assertAlmostEqual(table_summary["locked_profit"], 1.7)
         self.assertAlmostEqual(table_summary["realized_pnl"], 0.6)
+
+    def test_redeem_activity_closes_winning_position_as_realized_cashflow(self) -> None:
+        parsed = parse_trades(
+            [
+                {"type": "TRADE", "side": "BUY", "outcome": "Up", "size": 10, "price": 0.75, "usdcSize": 7.5, "timestamp": 1000},
+                {"type": "REDEEM", "size": 10, "usdcSize": 10, "timestamp": 1100},
+            ]
+        )
+
+        summary = calculate_trade_summary(parsed)
+        self.assertAlmostEqual(summary["yes_shares"], 0.0)
+        self.assertAlmostEqual(summary["total_net_spent"], -2.5)
+        self.assertAlmostEqual(summary["total_buy_cost"], 7.5)
+        self.assertAlmostEqual(summary["total_fee"], 0.0)
+        self.assertAlmostEqual(summary["total_settlement_proceeds"], 10.0)
+        self.assertAlmostEqual(summary["realized_pnl"], 2.5)
+        self.assertAlmostEqual(summary["if_yes_wins_pnl"], 2.5)
+        self.assertAlmostEqual(summary["if_no_wins_pnl"], 2.5)
+
+        table_rows = calculate_table_metrics(parsed)
+        table_summary = calculate_summary(table_rows)
+        self.assertEqual(table_rows[-1]["yes_trade"], "REDEEM 10.00 / $10.00")
+        self.assertAlmostEqual(table_summary["total_spent"], -2.5)
+        self.assertAlmostEqual(table_summary["total_invested"], 7.5)
+        self.assertAlmostEqual(table_summary["total_fee"], 0.0)
+        self.assertAlmostEqual(table_summary["realized_pnl"], 2.5)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            html_path = Path(tmp) / "table.html"
+            generate_html_table(
+                table_rows,
+                html_path,
+                summary=table_summary,
+                metadata={"market_title": "m", "condition_id": "c", "user_address": "u", "trade_count": 2},
+                totals=summary,
+            )
+            html_text = html_path.read_text()
+        self.assertIn("Total Invested", html_text)
+        self.assertIn("Total Fee", html_text)
+        self.assertIn("Final / Locked PnL", html_text)
+        self.assertIn("<th>Total Fee</th>", html_text)
+        self.assertNotIn("Net Spent (buys", html_text)
+        self.assertNotIn("Realized from sells/settlement", html_text)
+        self.assertNotIn("<th>If YES</th>", html_text)
+        self.assertNotIn("<th>If NO</th>", html_text)
+        self.assertNotIn("If YES wins", html_text)
+        self.assertNotIn("If NO wins", html_text)
+
+    def test_redeem_prefers_exact_winning_share_match_and_expires_loser(self) -> None:
+        parsed = parse_trades(
+            [
+                {"type": "TRADE", "side": "BUY", "outcome": "Up", "size": 16.444443, "price": 0.54, "usdcSize": 9.165929, "timestamp": 1000},
+                {"type": "TRADE", "side": "BUY", "outcome": "Down", "size": 17.769229, "price": 0.26, "usdcSize": 4.859309, "timestamp": 1001},
+                {"type": "REDEEM", "size": 16.444443, "usdcSize": 16.444443, "timestamp": 1100},
+            ]
+        )
+
+        summary = calculate_trade_summary(parsed)
+        self.assertAlmostEqual(summary["yes_shares"], 0.0)
+        self.assertAlmostEqual(summary["no_shares"], 0.0)
+        self.assertAlmostEqual(summary["total_net_spent"], -2.419205, places=6)
+        self.assertAlmostEqual(summary["realized_pnl"], 2.419205, places=6)
+
+    def test_parse_trades_uses_usdc_size_for_public_activity_buy_cost(self) -> None:
+        parsed = parse_trades(
+            [
+                {"type": "TRADE", "side": "BUY", "outcome": "Up", "size": 10, "price": 0.5, "usdcSize": 5.1, "timestamp": 1000},
+            ]
+        )
+
+        self.assertAlmostEqual(parsed[0]["gross_cost"], 5.0)
+        self.assertAlmostEqual(parsed[0]["cost"], 5.1)
+        self.assertAlmostEqual(parsed[0]["fee"], 0.1)
+
+    def test_fee_inclusive_sell_proceeds_drive_total_fee_and_realized_pnl(self) -> None:
+        parsed = parse_trades(
+            [
+                {"type": "TRADE", "side": "BUY", "outcome": "Up", "size": 10, "price": 0.50, "usdcSize": 5.10, "timestamp": 1000},
+                {"type": "TRADE", "side": "SELL", "outcome": "Up", "size": 4, "price": 0.70, "usdcSize": 2.70, "timestamp": 1001},
+            ]
+        )
+
+        summary = calculate_trade_summary(parsed)
+        table_summary = calculate_summary(calculate_table_metrics(parsed))
+
+        self.assertAlmostEqual(parsed[0]["fee"], 0.10)
+        self.assertAlmostEqual(parsed[1]["fee"], 0.10)
+        self.assertAlmostEqual(summary["total_fee"], 0.20)
+        self.assertAlmostEqual(summary["realized_pnl"], 0.66)
+        self.assertAlmostEqual(table_summary["total_fee"], 0.20)
 
     def test_table_metrics_list_only_reported_trade_side(self) -> None:
         parsed = parse_trades(
@@ -191,7 +287,7 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
         self.assertEqual(event["slug"], "btc-updown-5m-1777439400")
         self.assertEqual(market["conditionId"], "0x" + "c" * 64)
 
-    def test_fetch_trades_detailed_public_source_labels_public_view(self) -> None:
+    def test_fetch_trades_detailed_public_source_labels_activity_view(self) -> None:
         public_rows = [
             {
                 "side": "SELL",
@@ -199,17 +295,20 @@ class LegacyTradeAnalysisTests(unittest.TestCase):
                 "size": 2,
                 "price": 0.25,
                 "timestamp": 1001,
-                "source": "data_api_public_trades",
+                "source": "data_api_public_activity",
             }
         ]
-        with patch("trade_analysis.fetch_public_trades", return_value=public_rows) as public_fetch:
+        with patch("trade_analysis.fetch_public_activity", return_value=public_rows) as public_fetch, patch(
+            "trade_analysis.fetch_public_trades"
+        ) as trades_fetch:
             result = fetch_trades_detailed("0x" + "d" * 64, "0xuser", source="public")
 
         public_fetch.assert_called_once()
+        trades_fetch.assert_not_called()
         self.assertEqual(result.meta["data_source"], "public_data_api")
-        self.assertEqual(result.meta["view_mode"], "public_canonical_view")
+        self.assertEqual(result.meta["view_mode"], "public_activity_cashflow_view")
         self.assertEqual(result.meta["trade_count"], 1)
-        self.assertEqual(result.trades[0]["source"], "data_api_public_trades")
+        self.assertEqual(result.trades[0]["source"], "data_api_public_activity")
         self.assertIn("Public Data API", result.meta["warnings"][0])
 
     def test_fetch_trades_detailed_authenticated_source_does_not_fallback_to_public(self) -> None:

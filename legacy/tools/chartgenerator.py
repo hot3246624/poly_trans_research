@@ -124,6 +124,37 @@ def write_stats_report(
         side_counts[trade["type"]] = side_counts.get(trade["type"], 0) + 1
         outcome_counts[trade["side"]] = outcome_counts.get(trade["side"], 0) + 1
 
+    has_open_position = abs(resolution["remaining_yes"]) > 1e-9 or abs(resolution["remaining_no"]) > 1e-9
+    position_lines = [
+        f"Remaining YES shares: {resolution['remaining_yes']:.6f}",
+        f"Remaining NO shares:  {resolution['remaining_no']:.6f}",
+        f"Total invested (BUY actual cash outflow): $ {summary['total_buy_cost']:.6f}",
+        f"Total fee-like cost: $ {summary.get('total_fee', 0.0):.6f}",
+        f"Net cash outflow after sells/settlement: $ {resolution['total_spent']:.6f}",
+    ]
+    if has_open_position:
+        position_lines.extend(
+            [
+                f"Final value at resolution: $ {resolution['final_value']:.6f}",
+                f"FINAL PNL: $ {resolution['pnl']:.6f}",
+                f"If YES wins PnL: $ {resolution['if_yes_wins_pnl']:.6f}",
+                f"If NO wins PnL:  $ {resolution['if_no_wins_pnl']:.6f}",
+                f"Locked PnL: $ {resolution['locked_profit']:.6f}",
+            ]
+        )
+    else:
+        position_lines.extend(
+            [
+                f"FINAL / LOCKED PNL: $ {-resolution['total_spent']:.6f}",
+                "Status: closed/settled; no remaining YES/NO shares",
+            ]
+        )
+    position_lines.extend(
+        [
+            f"Remaining cost basis: $ {summary['total_cost_basis']:.6f}",
+        ]
+    )
+
     lines = [
         f"MARKET: {target_market}",
         f"DATA SOURCE: {data_source}",
@@ -136,27 +167,20 @@ def write_stats_report(
         f"OUTCOME COUNTS: YES/Up={outcome_counts.get('Up', 0)} NO/Down={outcome_counts.get('Down', 0)}",
         "",
         "--- Position and cash accounting ---",
-        f"Remaining YES shares: {resolution['remaining_yes']:.6f}",
-        f"Remaining NO shares:  {resolution['remaining_no']:.6f}",
-        f"Net cash spent (buys - sells): $ {resolution['total_spent']:.6f}",
-        f"Final value at resolution: $ {resolution['final_value']:.6f}",
-        f"FINAL PNL: $ {resolution['pnl']:.6f}",
-        f"If YES wins PnL: $ {resolution['if_yes_wins_pnl']:.6f}",
-        f"If NO wins PnL:  $ {resolution['if_no_wins_pnl']:.6f}",
-        f"Locked floor PnL: $ {resolution['locked_profit']:.6f}",
-        f"Remaining cost basis: $ {summary['total_cost_basis']:.6f}",
-        f"Realized PnL from explicit sells: $ {summary['realized_pnl']:.6f}",
+        *position_lines,
         "",
         "--- Gross buy/sell totals ---",
         f"YES buys:  {summary['yes_buy_shares']:.6f} sh / $ {summary['yes_buy_cost']:.6f}",
         f"YES sells: {summary['yes_sell_shares']:.6f} sh / $ {summary['yes_sell_proceeds']:.6f}",
+        f"YES fees:  $ {summary.get('yes_fee', 0.0):.6f}",
         f"NO buys:   {summary['no_buy_shares']:.6f} sh / $ {summary['no_buy_cost']:.6f}",
         f"NO sells:  {summary['no_sell_shares']:.6f} sh / $ {summary['no_sell_proceeds']:.6f}",
+        f"NO fees:   $ {summary.get('no_fee', 0.0):.6f}",
         "",
         "--- Final net position ---",
-        f"YES net spent: $ {summary['yes_net_spent']:.6f} | avg remaining cost $ {summary['yes_avg_cost']:.6f}",
-        f"NO net spent:  $ {summary['no_net_spent']:.6f} | avg remaining cost $ {summary['no_avg_cost']:.6f}",
-        f"Total net spent: $ {summary['total_net_spent']:.6f}",
+        f"YES net cash outflow: $ {summary['yes_net_spent']:.6f} | avg remaining cost $ {summary['yes_avg_cost']:.6f}",
+        f"NO net cash outflow:  $ {summary['no_net_spent']:.6f} | avg remaining cost $ {summary['no_avg_cost']:.6f}",
+        f"Total net cash outflow: $ {summary['total_net_spent']:.6f}",
         f"Share imbalance YES-NO: {summary['imbalance_shares']:.6f} sh",
         "",
         "--- Trades (sorted by timestamp) ---",
@@ -432,15 +456,15 @@ def main() -> None:
     )
 
     ax3.grid(alpha=0.3)
-    ax3.plot(x_indices, series["yes_net_spent"], color="green", linewidth=2, label="YES net spent ($)")
-    ax3.plot(x_indices, series["no_net_spent"], color="red", linewidth=2, label="NO net spent ($)")
-    ax3.plot(x_indices, series["total_net_spent"], color="blue", linewidth=2, label="TOTAL net spent ($)")
+    ax3.plot(x_indices, series["yes_net_spent"], color="green", linewidth=2, label="YES net outflow ($)")
+    ax3.plot(x_indices, series["no_net_spent"], color="red", linewidth=2, label="NO net outflow ($)")
+    ax3.plot(x_indices, series["total_net_spent"], color="blue", linewidth=2, label="TOTAL net outflow ($)")
     ax3.axhline(0, color="gray", linewidth=0.8, alpha=0.5)
     _annotate_last(ax3, x_indices, series["yes_net_spent"], "green", prefix="$")
     _annotate_last(ax3, x_indices, series["no_net_spent"], "red", prefix="$")
     _annotate_last(ax3, x_indices, series["total_net_spent"], "blue", prefix="$")
-    ax3.set_title("Net Cash Spent (buys - sells)")
-    ax3.set_ylabel("Net spent ($)")
+    ax3.set_title("Net Cash Outflow (buys - sells - settlement)")
+    ax3.set_ylabel("Net outflow ($)")
     ax3.set_xticks([])
     ax3.legend(loc="upper left")
 
@@ -448,7 +472,9 @@ def main() -> None:
         f"MARKET RESOLVED: {resolved_side}\n"
         f"Remaining YES shares: {resolution['remaining_yes']:.2f}\n"
         f"Remaining NO shares:  {resolution['remaining_no']:.2f}\n"
-        f"Net Spent: $ {resolution['total_spent']:.2f}\n"
+        f"Total Invested: $ {summary['total_buy_cost']:.2f}\n"
+        f"Total Fee: $ {summary.get('total_fee', 0.0):.2f}\n"
+        f"Net Outflow: $ {resolution['total_spent']:.2f}\n"
         f"Final Value: $ {resolution['final_value']:.2f}\n"
         f"FINAL PNL: $ {resolution['pnl']:.2f}"
     )

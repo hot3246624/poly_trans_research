@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 EVENTS_URL = "https://gamma-api.polymarket.com/events"
+ACTIVITY_URL = "https://data-api.polymarket.com/activity"
 TRADES_URL = "https://data-api.polymarket.com/trades"
 CLOB_URL = "https://clob.polymarket.com"
 CACHE_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "trade_analysis" / "_cache"
@@ -53,10 +54,13 @@ class OutcomeState:
     shares: float = 0.0
     net_spent: float = 0.0
     cost_basis: float = 0.0
+    fee_paid: float = 0.0
     buy_shares: float = 0.0
     buy_cost: float = 0.0
     sell_shares: float = 0.0
     sell_proceeds: float = 0.0
+    settlement_shares: float = 0.0
+    settlement_proceeds: float = 0.0
     realized_pnl: float = 0.0
 
     @property
@@ -201,10 +205,17 @@ def normalize_direction(value: Any) -> str:
 
 
 def display_outcome(side: str) -> str:
-    return "YES" if side == "Up" else "NO"
+    if side == "Up":
+        return "YES"
+    if side == "Down":
+        return "NO"
+    return "SETTLEMENT"
 
 
 def trade_label(trade: dict[str, Any], *, include_side: bool = False) -> str:
+    if trade["type"] not in {"Buy", "Sell"}:
+        side_part = f" {display_outcome(trade['side'])}" if include_side and trade["side"] in {"Up", "Down"} else ""
+        return f"{trade['type'].upper()}{side_part} {float(trade['shares']):.2f} / ${float(trade['cost']):.2f}"
     side_part = f" {display_outcome(trade['side'])}" if include_side else ""
     return f"{trade['type'].upper()}{side_part} {float(trade['shares']):.2f} @ {float(trade['price']):.2f}c"
 
@@ -266,23 +277,39 @@ def parse_trades(
     tz = ZoneInfo(display_tz)
     parsed: list[dict[str, Any]] = []
     for item in raw_data:
+        activity_type = str(item.get("type") or "TRADE").strip().upper()
         price_dollars = _as_float(item.get("price"))
         shares = _as_float(item.get("size"))
         timestamp = _as_int_timestamp(item.get("timestamp"))
         dt_et = dt.datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(tz)
-        outcome = normalize_outcome(item.get("outcome"), item.get("outcomeIndex"))
-        trade_type = normalize_direction(item.get("side"))
-        cost = price_dollars * shares
+        if activity_type == "TRADE":
+            outcome = normalize_outcome(item.get("outcome"), item.get("outcomeIndex"))
+            trade_type = normalize_direction(item.get("side"))
+        else:
+            outcome = "Settlement"
+            trade_type = activity_type.title()
+        gross = price_dollars * shares
+        default_cost = shares if activity_type in {"MERGE", "REDEEM"} and gross <= EPSILON else gross
+        cost = _as_float(item.get("usdcSize"), default_cost)
+        fee = 0.0
+        if activity_type == "TRADE" and item.get("usdcSize") not in (None, ""):
+            if trade_type == "Buy":
+                fee = max(0.0, cost - gross)
+            elif trade_type == "Sell":
+                fee = max(0.0, gross - cost)
         signed = 1.0 if trade_type == "Buy" else -1.0
         parsed.append(
             {
                 "type": trade_type,
+                "activity_type": activity_type,
                 "market": item.get("title", ""),
                 "side": outcome,
                 "price": price_dollars * 100.0,
                 "price_dollars": price_dollars,
                 "shares": shares,
+                "gross_cost": gross,
                 "cost": cost,
+                "fee": fee,
                 "signed_cost": signed * cost,
                 "signed_shares": signed * shares,
                 "timestamp": timestamp,
@@ -296,21 +323,23 @@ def parse_trades(
         )
 
     if sort:
-        parsed.sort(key=lambda x: x["timestamp"])
+        parsed.sort(key=lambda x: (x["timestamp"], 0 if x["type"] in {"Buy", "Sell"} else 1))
     return parsed
 
 
-def _apply_trade(state: OutcomeState, trade: dict[str, Any]) -> None:
+def _apply_outcome_trade(state: OutcomeState, trade: dict[str, Any]) -> None:
     qty = float(trade["shares"])
     price = float(trade["price_dollars"])
-    gross = float(trade["cost"])
+    actual_cash = float(trade["cost"])
+    fee = float(trade.get("fee") or 0.0)
 
     if trade["type"] == "Buy":
         state.buy_shares += qty
-        state.buy_cost += gross
+        state.buy_cost += actual_cash
+        state.fee_paid += fee
         state.shares += qty
-        state.net_spent += gross
-        state.cost_basis += gross
+        state.net_spent += actual_cash
+        state.cost_basis += actual_cash
         return
 
     before_shares = state.shares
@@ -318,16 +347,90 @@ def _apply_trade(state: OutcomeState, trade: dict[str, Any]) -> None:
     avg_before = before_basis / before_shares if before_shares > EPSILON else 0.0
     closed_qty = min(qty, before_shares) if before_shares > EPSILON else 0.0
     basis_removed = avg_before * closed_qty
+    actual_price = actual_cash / qty if qty > EPSILON else price
 
     state.sell_shares += qty
-    state.sell_proceeds += gross
+    state.sell_proceeds += actual_cash
+    state.fee_paid += fee
     state.shares -= qty
-    state.net_spent -= gross
+    state.net_spent -= actual_cash
     state.cost_basis = max(0.0, before_basis - basis_removed)
-    state.realized_pnl += (price - avg_before) * closed_qty
+    state.realized_pnl += (actual_price - avg_before) * closed_qty
 
     if state.shares <= EPSILON:
         state.cost_basis = 0.0
+
+
+def _settlement_candidate(yes: OutcomeState, no: OutcomeState, qty: float) -> OutcomeState:
+    candidates = [state for state in (yes, no) if state.shares + EPSILON >= qty]
+    exact_candidates = [state for state in candidates if abs(state.shares - qty) <= max(EPSILON, qty * 1e-6)]
+    if len(exact_candidates) == 1:
+        return exact_candidates[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        return min(candidates, key=lambda state: abs(state.shares - qty))
+    return yes if yes.shares >= no.shares else no
+
+
+def _expire_losing_state(state: OutcomeState) -> None:
+    if state.shares <= EPSILON and state.cost_basis <= EPSILON:
+        return
+    state.settlement_shares += state.shares
+    state.realized_pnl -= state.cost_basis
+    state.shares = 0.0
+    state.cost_basis = 0.0
+
+
+def _apply_redeem(yes: OutcomeState, no: OutcomeState, trade: dict[str, Any]) -> None:
+    qty = float(trade["shares"])
+    proceeds = float(trade["cost"])
+    state = _settlement_candidate(yes, no, qty)
+    loser = no if state is yes else yes
+    before_shares = state.shares
+    avg_before = state.cost_basis / before_shares if before_shares > EPSILON else 0.0
+    closed_qty = min(qty, before_shares) if before_shares > EPSILON else 0.0
+    basis_removed = avg_before * closed_qty
+
+    state.settlement_shares += qty
+    state.settlement_proceeds += proceeds
+    state.shares -= closed_qty
+    state.net_spent -= proceeds
+    state.cost_basis = max(0.0, state.cost_basis - basis_removed)
+    state.realized_pnl += proceeds - basis_removed
+    if state.shares <= EPSILON:
+        state.shares = 0.0
+        state.cost_basis = 0.0
+    _expire_losing_state(loser)
+
+
+def _apply_merge(yes: OutcomeState, no: OutcomeState, trade: dict[str, Any]) -> None:
+    qty = float(trade["shares"])
+    proceeds = float(trade["cost"])
+    per_side_proceeds = proceeds / 2.0
+    for state in (yes, no):
+        before_shares = state.shares
+        avg_before = state.cost_basis / before_shares if before_shares > EPSILON else 0.0
+        closed_qty = min(qty, before_shares) if before_shares > EPSILON else 0.0
+        basis_removed = avg_before * closed_qty
+        state.settlement_shares += qty
+        state.settlement_proceeds += per_side_proceeds
+        state.shares -= closed_qty
+        state.net_spent -= per_side_proceeds
+        state.cost_basis = max(0.0, state.cost_basis - basis_removed)
+        state.realized_pnl += per_side_proceeds - basis_removed
+        if state.shares <= EPSILON:
+            state.shares = 0.0
+            state.cost_basis = 0.0
+
+
+def _apply_event(yes: OutcomeState, no: OutcomeState, trade: dict[str, Any]) -> None:
+    if trade["type"] in {"Buy", "Sell"}:
+        _apply_outcome_trade(yes if trade["side"] == "Up" else no, trade)
+    elif trade["type"] == "Redeem":
+        _apply_redeem(yes, no, trade)
+    elif trade["type"] == "Merge":
+        _apply_merge(yes, no, trade)
 
 
 def _snapshot(
@@ -349,6 +452,9 @@ def _snapshot(
         "yes_net_spent": yes.net_spent,
         "no_net_spent": no.net_spent,
         "total_net_spent": total_net_spent,
+        "yes_fee": yes.fee_paid,
+        "no_fee": no.fee_paid,
+        "total_fee": yes.fee_paid + no.fee_paid,
         "yes_cost_basis": yes.cost_basis,
         "no_cost_basis": no.cost_basis,
         "total_cost_basis": yes.cost_basis + no.cost_basis,
@@ -363,8 +469,13 @@ def _snapshot(
         "no_buy_cost": no.buy_cost,
         "no_sell_shares": no.sell_shares,
         "no_sell_proceeds": no.sell_proceeds,
+        "yes_settlement_shares": yes.settlement_shares,
+        "yes_settlement_proceeds": yes.settlement_proceeds,
+        "no_settlement_shares": no.settlement_shares,
+        "no_settlement_proceeds": no.settlement_proceeds,
         "total_buy_cost": yes.buy_cost + no.buy_cost,
         "total_sell_proceeds": yes.sell_proceeds + no.sell_proceeds,
+        "total_settlement_proceeds": yes.settlement_proceeds + no.settlement_proceeds,
         "realized_pnl": yes.realized_pnl + no.realized_pnl,
         "locked_profit": locked_profit,
         "if_yes_wins_pnl": if_yes_wins_pnl,
@@ -383,7 +494,7 @@ def calculate_position_series(parsed: list[dict[str, Any]]) -> dict[str, list[An
     rows: list[dict[str, Any]] = []
 
     for trade in parsed:
-        _apply_trade(yes if trade["side"] == "Up" else no, trade)
+        _apply_event(yes, no, trade)
         rows.append(_snapshot(yes, no, trade))
 
     keys = [
@@ -396,6 +507,9 @@ def calculate_position_series(parsed: list[dict[str, Any]]) -> dict[str, list[An
         "yes_net_spent",
         "no_net_spent",
         "total_net_spent",
+        "yes_fee",
+        "no_fee",
+        "total_fee",
         "yes_cost_basis",
         "no_cost_basis",
         "total_cost_basis",
@@ -410,8 +524,13 @@ def calculate_position_series(parsed: list[dict[str, Any]]) -> dict[str, list[An
         "no_buy_cost",
         "no_sell_shares",
         "no_sell_proceeds",
+        "yes_settlement_shares",
+        "yes_settlement_proceeds",
+        "no_settlement_shares",
+        "no_settlement_proceeds",
         "total_buy_cost",
         "total_sell_proceeds",
+        "total_settlement_proceeds",
         "realized_pnl",
         "locked_profit",
         "if_yes_wins_pnl",
@@ -424,7 +543,7 @@ def calculate_trade_summary(parsed: list[dict[str, Any]]) -> dict[str, Any]:
     yes = OutcomeState()
     no = OutcomeState()
     for trade in parsed:
-        _apply_trade(yes if trade["side"] == "Up" else no, trade)
+        _apply_event(yes, no, trade)
     snap = _snapshot(yes, no)
     snap["yes_state"] = yes
     snap["no_state"] = no
@@ -441,6 +560,8 @@ def calculate_resolution_pnl(parsed: list[dict[str, Any]], resolved_side: str) -
         "remaining_no": summary["no_shares"],
         "final_value": final_value,
         "total_spent": total_spent,
+        "total_invested": summary["total_buy_cost"],
+        "total_fee": summary["total_fee"],
         "pnl": final_value - total_spent,
         "if_yes_wins_pnl": summary["if_yes_wins_pnl"],
         "if_no_wins_pnl": summary["if_no_wins_pnl"],
@@ -454,9 +575,13 @@ def calculate_table_metrics(parsed: list[dict[str, Any]]) -> list[dict[str, Any]
     rows: list[dict[str, Any]] = []
 
     for trade in parsed:
-        _apply_trade(yes if trade["side"] == "Up" else no, trade)
+        settlement_target = None
+        if trade["type"] == "Redeem":
+            settlement_target = _settlement_candidate(yes, no, float(trade["shares"]))
+        _apply_event(yes, no, trade)
         snap = _snapshot(yes, no, trade)
-        is_yes = trade["side"] == "Up"
+        is_yes = trade["side"] == "Up" or (trade["type"] == "Redeem" and settlement_target is yes)
+        is_no = trade["side"] == "Down" or (trade["type"] == "Redeem" and settlement_target is no)
         trade_str = trade_label(trade)
         diff_val = 0.0
         if snap["imbalance_shares"] > 0:
@@ -467,8 +592,8 @@ def calculate_table_metrics(parsed: list[dict[str, Any]]) -> list[dict[str, Any]
         rows.append(
             {
                 "time": trade["time_only_label"],
-                "yes_trade": trade_str if is_yes else "",
-                "no_trade": trade_str if not is_yes else "",
+                "yes_trade": trade_str if is_yes or trade["type"] == "Merge" else "",
+                "no_trade": trade_str if is_no or trade["type"] == "Merge" else "",
                 "cum_yes": snap["yes_shares"],
                 "avg_yes": snap["yes_avg_cost"],
                 "cum_no": snap["no_shares"],
@@ -477,6 +602,8 @@ def calculate_table_metrics(parsed: list[dict[str, Any]]) -> list[dict[str, Any]
                 "net_diff": snap["imbalance_shares"],
                 "diff_val": diff_val,
                 "net_spent": snap["total_net_spent"],
+                "total_buy_cost": snap["total_buy_cost"],
+                "total_fee": snap["total_fee"],
                 "realized_pnl": snap["realized_pnl"],
                 "profit": snap["locked_profit"],
                 "if_yes_wins_pnl": snap["if_yes_wins_pnl"],
@@ -493,6 +620,8 @@ def calculate_summary(rows: list[dict[str, Any]]) -> dict[str, float | str]:
             "cum_yes": 0.0,
             "cum_no": 0.0,
             "total_spent": 0.0,
+            "total_invested": 0.0,
+            "total_fee": 0.0,
             "locked_profit": 0.0,
             "if_yes_wins_pnl": 0.0,
             "if_no_wins_pnl": 0.0,
@@ -513,6 +642,8 @@ def calculate_summary(rows: list[dict[str, Any]]) -> dict[str, float | str]:
         "cum_yes": float(last["cum_yes"]),
         "cum_no": float(last["cum_no"]),
         "total_spent": float(last["net_spent"]),
+        "total_invested": float(last.get("total_buy_cost", 0.0)),
+        "total_fee": float(last.get("total_fee", 0.0)),
         "locked_profit": locked_profit,
         "if_yes_wins_pnl": float(last["if_yes_wins_pnl"]),
         "if_no_wins_pnl": float(last["if_no_wins_pnl"]),
@@ -721,6 +852,8 @@ def describe_trade_source(raw_data: Iterable[dict[str, Any]]) -> str:
     sources = {str(item.get("source") or "").strip() for item in raw_data if isinstance(item, dict)}
     if "clob_user_trades" in sources:
         return "Authenticated CLOB user trade history"
+    if "data_api_public_activity" in sources:
+        return "Public Data API activity"
     if "data_api_public_trades" in sources:
         return "Public Data API trades"
     return "Unknown/local JSON"
@@ -728,6 +861,11 @@ def describe_trade_source(raw_data: Iterable[dict[str, Any]]) -> str:
 
 def trade_source_warning(raw_data: Iterable[dict[str, Any]]) -> str:
     source = describe_trade_source(raw_data)
+    if source == "Public Data API activity":
+        return (
+            "Public Data API activity includes public TRADE/MERGE/REDEEM cashflows, but it is still "
+            "public-only and cannot preserve authenticated order-side or queue truth."
+        )
     if source == "Public Data API trades":
         return (
             "Public Data API can canonicalize binary-market order direction; use matching CLOB credentials "
@@ -1041,11 +1179,80 @@ def fetch_public_trades(
     return []
 
 
+def fetch_public_activity(
+    condition_id: str,
+    user_address: str,
+    *,
+    page_limit: int = 1000,
+    verbose: bool = False,
+) -> list[dict[str, Any]]:
+    if verbose:
+        print(f"Fetching public activity for market={condition_id}, user={user_address}...")
+    session = _requests_session()
+    all_rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        params = {
+            "market": condition_id,
+            "user": user_address,
+            "limit": page_limit,
+            "offset": offset,
+        }
+        try:
+            resp = session.get(ACTIVITY_URL, params=params, timeout=(10, 120))
+        except Exception as exc:
+            print(f"Error fetching activity (offset={offset}, limit={page_limit}): {exc!r}")
+            return all_rows
+
+        if resp.status_code >= 400:
+            body_preview = (resp.text or "").strip()
+            if len(body_preview) > 500:
+                body_preview = body_preview[:500] + "...(truncated)"
+            print(
+                f"Error fetching activity (offset={offset}, limit={page_limit}): "
+                f"HTTP {resp.status_code} {resp.reason}. Body: {body_preview}"
+            )
+            return all_rows
+
+        try:
+            data = resp.json()
+        except Exception as exc:
+            print(f"Error parsing activity JSON (offset={offset}): {exc!r}")
+            return all_rows
+
+        if isinstance(data, dict):
+            batch = data.get("activity") or data.get("data") or []
+        elif isinstance(data, list):
+            batch = data
+        else:
+            batch = []
+
+        if not batch:
+            break
+        all_rows.extend(row for row in batch if isinstance(row, dict))
+        if len(batch) < page_limit:
+            break
+        offset += page_limit
+        if verbose:
+            print(f"  [activity] Fetched {len(all_rows)} rows so far...")
+
+    typed_rows = []
+    for row in all_rows:
+        row_type = str(row.get("type") or "").upper()
+        if row_type not in {"TRADE", "MERGE", "REDEEM", "SPLIT"}:
+            continue
+        if row_type != "TRADE" and _as_float(row.get("size")) <= EPSILON and _as_float(row.get("usdcSize")) <= EPSILON:
+            continue
+        typed_rows.append(row)
+    typed_rows.sort(key=lambda item: _as_int_timestamp(item.get("timestamp")))
+    return with_trade_source(typed_rows, "data_api_public_activity")
+
+
 def _fetch_cache_key(condition_id: str, user_address: str, source: str) -> str:
     auth_meta, auth_secrets = _clob_auth_context(user_address)
     return _json_cache_key(
         {
-            "kind": "legacy_trade_fetch_v2",
+            "kind": "legacy_trade_fetch_v3",
             "condition_id": str(condition_id or "").lower(),
             "user_address": str(user_address or "").lower(),
             "requested_source": source,
@@ -1121,10 +1328,15 @@ def fetch_trades_detailed(
     if not trades and requested_source in {"auto", "public"}:
         if requested_source == "auto" and auth_meta["reason"]:
             meta["fallback_reason"] = auth_meta["reason"]
-        trades = fetch_public_trades(condition_id, user_address, page_limit=page_limit, verbose=verbose)
-        meta["endpoints"].append("data-api:/trades")
+        trades = fetch_public_activity(condition_id, user_address, page_limit=page_limit, verbose=verbose)
+        meta["endpoints"].append("data-api:/activity")
+        if not trades:
+            trades = fetch_public_trades(condition_id, user_address, page_limit=page_limit, verbose=verbose)
+            meta["endpoints"].append("data-api:/trades")
         meta["data_source"] = "public_data_api"
-        meta["view_mode"] = "public_canonical_view"
+        meta["view_mode"] = "public_activity_cashflow_view" if trades and any(
+            str(row.get("source")) == "data_api_public_activity" for row in trades
+        ) else "public_canonical_view"
 
     if meta["data_source"] == "public_data_api":
         warning = trade_source_warning(trades) or (

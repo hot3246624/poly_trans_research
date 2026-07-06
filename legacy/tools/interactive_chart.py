@@ -76,8 +76,15 @@ def _build_trade_nodes(parsed: list[dict]) -> list[dict]:
         ]
         details = []
         for trade in group:
-            side_display = "YES" if trade["side"] == "Up" else "NO"
-            text_color = "#55ff55" if trade["side"] == "Up" else "#ff5555"
+            if trade["side"] == "Up":
+                side_display = "YES"
+                text_color = "#55ff55"
+            elif trade["side"] == "Down":
+                side_display = "NO"
+                text_color = "#ff5555"
+            else:
+                side_display = "SETTLEMENT"
+                text_color = "#ffd166"
             net_delta = trade["cost"] if trade["type"] == "Buy" else -trade["cost"]
             line = (
                 f"{trade['type'].upper()} {side_display} "
@@ -189,9 +196,9 @@ def generate_chart(
     fig.add_trace(go.Scatter(x=times, y=series["no_buy_shares"], name="NO buys (sh)", line=dict(color="magenta", width=1.4)), row=2, col=1)
     fig.add_trace(go.Scatter(x=times, y=series["no_sell_shares"], name="NO sells (sh)", line=dict(color="red", width=1.4, dash="dash")), row=2, col=1)
 
-    fig.add_trace(go.Scatter(x=times, y=series["yes_net_spent"], name="YES net spent ($)", line=dict(color="green")), row=3, col=1)
-    fig.add_trace(go.Scatter(x=times, y=series["no_net_spent"], name="NO net spent ($)", line=dict(color="red")), row=3, col=1)
-    fig.add_trace(go.Scatter(x=times, y=series["total_net_spent"], name="TOTAL net spent ($)", line=dict(color="blue")), row=3, col=1)
+    fig.add_trace(go.Scatter(x=times, y=series["yes_net_spent"], name="YES net outflow ($)", line=dict(color="green")), row=3, col=1)
+    fig.add_trace(go.Scatter(x=times, y=series["no_net_spent"], name="NO net outflow ($)", line=dict(color="red")), row=3, col=1)
+    fig.add_trace(go.Scatter(x=times, y=series["total_net_spent"], name="TOTAL net outflow ($)", line=dict(color="blue")), row=3, col=1)
 
     fig.add_trace(go.Scatter(x=times, y=series["yes_shares"], name="YES open (sh)", line=dict(color="green", dash="dot")), row=4, col=1)
     fig.add_trace(go.Scatter(x=times, y=series["no_shares"], name="NO open (sh)", line=dict(color="red", dash="dot")), row=4, col=1)
@@ -229,22 +236,31 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
     locked_cls = _money_class(float(summary["locked_profit"]))
     yes_cls = _money_class(float(summary["if_yes_wins_pnl"]))
     no_cls = _money_class(float(summary["if_no_wins_pnl"]))
-    realized_cls = _money_class(float(summary["realized_pnl"]))
+    total_invested = float(totals.get("total_buy_cost", summary.get("total_invested", 0.0)))
+    total_fee = float(totals.get("total_fee", summary.get("total_fee", 0.0)))
     verdict_map = {
         "POSITIVE": ("pos", "配对部分为正收益 / Positive locked PnL"),
         "NEGATIVE": ("neg", "配对部分为负收益 / Negative locked PnL"),
         "NEUTRAL": ("neu", "配对部分接近持平 / Near break-even"),
     }
     verdict_cls, verdict_text = verdict_map.get(summary.get("final_verdict"), ("neu", "Unknown"))
+    has_open_position = abs(float(summary["cum_yes"])) > 1e-9 or abs(float(summary["cum_no"])) > 1e-9
 
     body_rows = []
     for row in rows:
         diff_cls = _money_class(float(row["net_diff"]))
         spent_cls = _money_class(-float(row["net_spent"]))
-        realized_row_cls = _money_class(float(row["realized_pnl"]))
         prof_cls = _money_class(float(row["profit"]))
         yes_win_cls = _money_class(float(row["if_yes_wins_pnl"]))
         no_win_cls = _money_class(float(row["if_no_wins_pnl"]))
+        scenario_cells = (
+            f"""
+                <td class="{yes_win_cls}">${row['if_yes_wins_pnl']:.2f}</td>
+                <td class="{no_win_cls}">${row['if_no_wins_pnl']:.2f}</td>
+            """
+            if has_open_position
+            else ""
+        )
         pair_cls = "cost-col"
         if row["pair_cost"] > 1.001:
             pair_cls = "neg"
@@ -264,26 +280,41 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
                 <td class="{pair_cls}">${row['pair_cost']:.4f}</td>
                 <td class="{diff_cls}">{row['net_diff']:.2f}</td>
                 <td class="{spent_cls}">${row['net_spent']:.2f}</td>
-                <td class="{realized_row_cls}">${row['realized_pnl']:.2f}</td>
+                <td class="cost-col">${row['total_fee']:.2f}</td>
                 <td class="{prof_cls}">${row['profit']:.2f}</td>
-                <td class="{yes_win_cls}">${row['if_yes_wins_pnl']:.2f}</td>
-                <td class="{no_win_cls}">${row['if_no_wins_pnl']:.2f}</td>
+                {scenario_cells}
             </tr>
             """
         )
+
+    if has_open_position:
+        outcome_block = f"""
+            <p>若 YES 胜出 If YES wins: <strong class="{yes_cls}">${summary['if_yes_wins_pnl']:.2f}</strong></p>
+            <p>若 NO 胜出 If NO wins: <strong class="{no_cls}">${summary['if_no_wins_pnl']:.2f}</strong></p>
+            <p>最终判断 Final Verdict: <strong class="{verdict_cls}">{verdict_text}</strong></p>
+        """
+        locked_label = "锁定盈亏 Locked PnL"
+    else:
+        outcome_block = f"""
+            <p>状态 Status: <strong class="neu">已平仓/已结算，无剩余 YES/NO 仓位</strong></p>
+        """
+        locked_label = "最终/锁定盈亏 Final / Locked PnL"
+
+    scenario_headers = """
+                    <th>If YES</th>
+                    <th>If NO</th>
+    """ if has_open_position else ""
 
     summary_block = f"""
         <div class="summary-box">
             <h3>总收益 / Total Return</h3>
             <p>剩余 YES / NO Remaining: <strong>{summary['cum_yes']:.2f}</strong> / <strong>{summary['cum_no']:.2f}</strong> shares</p>
-            <p>净投入 Net Spent (buys − sells): <strong>${summary['total_spent']:.2f}</strong></p>
-            <p>显式卖出已实现 Realized from sells: <strong class="{realized_cls}">${summary['realized_pnl']:.2f}</strong></p>
-            <p>总锁定利润 Locked Floor PnL: <strong class="{locked_cls}">${summary['locked_profit']:.2f}</strong></p>
-            <p>若 YES 胜出 If YES wins: <strong class="{yes_cls}">${summary['if_yes_wins_pnl']:.2f}</strong></p>
-            <p>若 NO 胜出 If NO wins: <strong class="{no_cls}">${summary['if_no_wins_pnl']:.2f}</strong></p>
-            <p>最终判断 Final Verdict: <strong class="{verdict_cls}">{verdict_text}</strong></p>
+            <p>累计投入 Total Invested: <strong>${total_invested:.2f}</strong></p>
+            <p>总手续费 Total Fee: <strong>${total_fee:.2f}</strong></p>
+            <p>{locked_label}: <strong class="{locked_cls}">${summary['locked_profit']:.2f}</strong></p>
+            {outcome_block}
             <p style="margin-top: 10px; font-size: 11px; color: #888;">
-                口径: 买入增加净投入和持仓；卖出减少净投入和持仓；剩余均价使用平均成本法，不用卖出价格倒扣。
+                口径: Total Invested 为累计 BUY 的实际 usdcSize 支出；Total Fee 为公开成交中 usdcSize 与 price×shares 的差额推断。表格里的 Net Outflow 是扣除卖出/结算后的累计现金流，不等于投入本金。
             </p>
         </div>
     """
@@ -337,11 +368,10 @@ def generate_html_table(rows: list[dict], filename: Path, *, summary: dict, meta
                     <th class="no-col">Avg NO ($)</th>
                     <th class="cost-col">Pair Cost</th>
                     <th>Net Diff</th>
-                    <th>Net Spent</th>
-                    <th>Realized</th>
+                    <th>Net Outflow</th>
+                    <th>Total Fee</th>
                     <th>Locked PnL</th>
-                    <th>If YES</th>
-                    <th>If NO</th>
+                    {scenario_headers}
                 </tr>
             </thead>
             <tbody>
