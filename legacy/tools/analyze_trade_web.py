@@ -359,6 +359,7 @@ def _run_analysis(market: str, user: str) -> dict[str, Any]:
         "--user",
         user,
         "--refresh",
+        "--skip-chart",
         "--no-open",
     ]
     proc = subprocess.run(

@@ -3,12 +3,9 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import sys
 from pathlib import Path
-
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -126,7 +123,7 @@ def _build_trade_nodes(parsed: list[dict]) -> list[dict]:
             {
                 "x": dt_value,
                 "y": avg_price,
-                "size": min(55, max(22, np.sqrt(max(total_shares, count)) * 3)),
+                "size": min(55, max(22, math.sqrt(max(total_shares, count)) * 3)),
                 "color": base_color,
                 "symbol": "circle",
                 "text": str(count),
@@ -146,6 +143,12 @@ def generate_chart(
     *,
     include_plotlyjs: bool | str = True,
 ) -> None:
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except Exception as exc:
+        raise RuntimeError("Plotly chart dependencies are unavailable") from exc
+
     min_ts = min(t["timestamp"] for t in parsed)
     max_ts = max(t["timestamp"] for t in parsed)
     start_et = parsed[0]["dt_et"]

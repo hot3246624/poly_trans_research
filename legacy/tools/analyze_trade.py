@@ -35,6 +35,27 @@ from trade_analysis import (
 RECENT_USER_PATH = CACHE_ROOT / "recent_user.txt"
 
 
+def _write_chart_placeholder(path: Path, message: str) -> None:
+    escaped = (
+        message.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+    path.write_text(
+        f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Chart unavailable</title></head>
+<body style="font-family: monospace; background: #111; color: #eee; padding: 24px;">
+<h2>Chart unavailable</h2>
+<p>{escaped}</p>
+<p>The analysis table was generated independently.</p>
+</body>
+</html>
+""",
+    )
+
+
 def _recent_user() -> str:
     try:
         return RECENT_USER_PATH.read_text().strip()
@@ -102,6 +123,7 @@ def _parser() -> argparse.ArgumentParser:
         default="cdn",
         help="Use CDN Plotly JS for smaller chart.html, or inline for offline HTML.",
     )
+    parser.add_argument("--skip-chart", action="store_true", help="Generate analysis_table.html without chart.html dependencies.")
     parser.add_argument("--open", dest="open_result", action="store_true", help="Open analysis_table.html after generation.")
     parser.add_argument("--no-open", dest="open_result", action="store_false", help="Do not open the generated HTML.")
     parser.set_defaults(open_result=True)
@@ -159,15 +181,28 @@ def main(argv: list[str] | None = None) -> int:
 
     output_bundle = prepare_output_bundle(raw_trades, market_title=market_title, user_address=user_address)
     output_bundle.trades_json.write_text(json.dumps(raw_trades, indent=2, ensure_ascii=False))
-    output_bundle.fetch_meta_json.write_text(json.dumps(fetch_meta, indent=2, ensure_ascii=False))
 
     parsed = parse_trades(raw_trades)
-    generate_chart(
-        parsed,
-        market_title,
-        output_bundle.chart_html,
-        include_plotlyjs=("cdn" if args.plotly_js == "cdn" else True),
-    )
+    if args.skip_chart:
+        _write_chart_placeholder(output_bundle.chart_html, "Chart generation was skipped by --skip-chart.")
+        fetch_meta["chart_status"] = "skipped"
+    else:
+        try:
+            generate_chart(
+                parsed,
+                market_title,
+                output_bundle.chart_html,
+                include_plotlyjs=("cdn" if args.plotly_js == "cdn" else True),
+            )
+            fetch_meta["chart_status"] = "generated"
+        except Exception as exc:
+            chart_error = f"{type(exc).__name__}: {exc}"
+            _write_chart_placeholder(output_bundle.chart_html, chart_error)
+            fetch_meta["chart_status"] = "failed"
+            fetch_meta["chart_error"] = chart_error
+            print(f"Chart generation skipped: {chart_error}", file=sys.stderr)
+
+    output_bundle.fetch_meta_json.write_text(json.dumps(fetch_meta, indent=2, ensure_ascii=False))
 
     table_rows = calculate_table_metrics(parsed)
     summary = calculate_summary(table_rows)
